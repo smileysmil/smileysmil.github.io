@@ -200,7 +200,7 @@ button:focus-visible{outline:2px solid var(--tx);outline-offset:2px}
    When you are logged in, that same save is also uploaded to the account server and downloaded on your
    other devices. Playing offline keeps working: it uploads the next time you are connected, and the game's
    existing offline-earnings code counts the time away on whichever device you open next. */
-const AC_API=""; // Where the account server lives. "" = the same server that served this page (node server.js).
+const AC_API="https://smileysmil-github-io.onrender.com"; // Where the account server lives. "" = the same server that served this page (node server.js).
                  // Hosting the page somewhere else? Put the server's address here, e.g. "https://my-game.onrender.com".
 const KPAcct=(()=>{
 const X={hold:false},el=id=>document.getElementById(id);
