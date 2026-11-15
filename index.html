@@ -200,7 +200,7 @@ button:focus-visible{outline:2px solid var(--tx);outline-offset:2px}
    When you are logged in, that same save is also uploaded to the account server and downloaded on your
    other devices. Playing offline keeps working: it uploads the next time you are connected, and the game's
    existing offline-earnings code counts the time away on whichever device you open next. */
-const AC_API="https://smileysmil-github-io.onrender.com"; // Where the account server lives. "" = the same server that served this page (node server.js).
+const AC_API=""; // Where the account server lives. "" = the same server that served this page (node server.js).
                  // Hosting the page somewhere else? Put the server's address here, e.g. "https://my-game.onrender.com".
 const KPAcct=(()=>{
 const X={hold:false},el=id=>document.getElementById(id);
@@ -249,7 +249,7 @@ async function push(force,keep){
  if(!acct||busy||X.hold||pickCloud)return false;
  lastTry=Date.now();busy=true;setStatus("syncing");
  save();const t=S.t,data=JSON.stringify(S);
- const r=await api("PUT","/api/save",{data,t,baseVer:acct.ver,force:!!force},{keepalive:!!keep&&data.length<60000});
+ const r=await api("PUT","/api/save",{data,t,baseVer:acct.ver,force:!!force,prof:typeof RX==="object"?RX.profile():undefined},{keepalive:!!keep&&data.length<60000});
  busy=false;
  if(r.off){setStatus("offline");return false}
  if(r.status===401){expired();return false}
@@ -296,7 +296,7 @@ async function keepLocal(){const b=el("ackeep");
 /* ---------- create account / log in */
 function authHtml(){const reg=tabK==="register";
  const title=cx.post?"Lock in your empire":cx.expired?"Session ended":reg?"Create your account":"Welcome back, Kingpin";
- const lead=cx.expired?"Log in again to keep syncing. Your progress is still saved on this device."
+ const lead=cx.expired?"Log in again to keep syncing. Your progress is still saved on this device. If your login no longer works, the server may have been reset: create the account again and this device's progress uploads to it."
   :reg?"Your empire follows you to every device. No signal? Keep playing: it saves here and syncs when you're back online."
   :"Log in to load your empire on this device. Anything you built offline syncs too.";
  return`<h3>${title}</h3><p class="mu">${lead}</p>
@@ -406,7 +406,116 @@ function init(){
  setInterval(()=>{if(acct&&!X.hold&&Date.now()-lastTry>=PUSH_EVERY)push()},5000);
  if(acct)launch()}
 
-Object.assign(X,{open,close,later,tab:setTab,onUser,onPass,toggle,submit,syncNow,logout,useCloud,keepLocal,afterTutorial,mdClosed,introLink,isAdmin,verifyAdmin,menuDesc,menuBtn,init,get a(){return acct}});
+Object.assign(X,{open,close,later,tab:setTab,onUser,onPass,toggle,submit,syncNow,logout,useCloud,keepLocal,afterTutorial,mdClosed,introLink,isAdmin,verifyAdmin,req:(m,p,b,o)=>api(m,p,b,o),menuDesc,menuBtn,init,get a(){return acct}});
+return X})();
+</script>
+<script>
+/* ===== Player raids =====
+   Enemy bases are built from the SAME building catalog and drawn with the SAME art as your own base, and their
+   defenses are the ones you can buy and upgrade (Sandbag Nest, Auto Turret, Machine Gun Nest, Armored Bunker).
+   Targets are either real players (logged-in accounts, via the server) or generated "players" with usernames. */
+const RX=(()=>{
+const X={now:0,who:"",cache:null,realP:.55,fetching:0,polling:0};
+const esc=s=>String(s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+
+/* ---------- believable usernames for the generated players */
+const NA=["Ghost","Slim","Vince","Dre","Kane","Rico","Nova","Frost","Lil","Big","Mad","Silent","Dark","Jay","Tony","Santos","Raven","Blaze","Smoke","Tank","Mike","Chino","Tito","Zeke","Dozer","Cash","Bishop","Ace"];
+const NB=["Shadow","Wolf","Don","Hustle","King","Block","Viper","Snake","Money","Reaper","Boss","Capo","Dagger","Gator","Saint","Moon","Storm","Ice","Flip","Slick","Jackal","Bandit","Phantom","Rider","Ruckus","Mamba"];
+const pk=a=>a[Math.floor(Math.random()*a.length)],dg=n=>String(Math.floor(Math.random()*Math.pow(10,n))).padStart(n,"0");
+function fakeName(){for(let i=0;i<20;i++){const r=Math.random(),a=pk(NA),b=pk(NB);
+ const n=r<.18?a+b:r<.34?a+"_"+b:r<.5?a+b+dg(2):r<.62?"xX"+a+"Xx":r<.74?a+dg(2+Math.floor(Math.random()*3)):r<.86?(a+"_"+b).toLowerCase()+dg(2):"The"+b+dg(1);
+ if(n.length<=16)return n}return pk(NA)+dg(3)}
+
+/* ---------- shield: after a raid on you, other players (real or generated) can't pull up for 12 hours */
+const shielded=()=>(S.shield||0)>(X.now||Date.now());
+function shieldLine(){const left=(S.shield||0)-Date.now();if(left<=0)return"";
+ return`<div class="bs-note">🛡️ <b>Rival-gang shield</b>: ${Math.floor(left/36e5)}h ${Math.floor(left%36e5/6e4)}m left. Other players can't raid you. Cops, the FBI and cartels still can.</div>`}
+
+/* ---------- the snapshot of my base that other players raid (uploaded with each cloud save) */
+function profile(){return{lvl:S.lvl,terr:S.terr||0,pw:Math.round(power()*defM()),dirty:Math.floor(S.dirty),cash:Math.floor(S.cash),sh:S.shield||0,
+ b:S.b.filter(b=>!b.d&&!(b.q&&b.q.k==="new")).map(b=>({t:b.t,x:b.x,y:b.y,l:b.l}))}}
+
+/* ---------- defenses: your buyable buildings, simulated as shooters in the raid view */
+const DEFS={sand:{hp:[50,5],dps:[1.6,.1],rng:3},turret:{hp:[80,7],dps:[3,.18],rng:4.2},mgnest:{hp:[120,9],dps:[6,.25],rng:3.4},bunker:{hp:[260,16],dps:[9,.35],rng:4}};
+function mkQ(t,hx,hy,l,d){const D=B[t],lf=1+.12*(l-1),q={t,x:hx/2,y:hy/2,s:D.s/2,l,hx,hy},df=DEFS[t];
+ if(df){q.hp=(df.hp[0]+df.hp[1]*d)*RC.bm*lf;q.def=1;q.dps=(df.dps[0]+df.dps[1]*d)*RC.dd*(1+.15*(l-1));q.rng=df.rng}
+ else q.hp=(60+14*d)*(D.s===1?.7:D.s===2?1:1.5)*RC.bm*lf;
+ q.mh=q.hp;return q}
+
+/* keep only buildings that fit inside the 8x8-tile raid yard and don't overlap (half-tile units: 6..21; safehouse is 12..15) */
+function sanitize(list){const used=new Set(),out=[],cell=(x,y,s,fn)=>{for(let i=0;i<s;i++)for(let j=0;j<s;j++)if(fn(x+i,y+j))return true;return false};
+ for(let i=12;i<16;i++)for(let j=12;j<16;j++)used.add(i+","+j);
+ for(const q of(list||[]).slice(0,120)){if(!q||!B[q.t]||q.t==="hq")continue;const s=B[q.t].s,x=q.x|0,y=q.y|0;
+  if(x<6||y<6||x+s>22||y+s>22||cell(x,y,s,(a,b)=>used.has(a+","+b)))continue;
+  cell(x,y,s,(a,b)=>{used.add(a+","+b);return false});out.push({t:q.t,x,y,l:Math.max(1,Math.min(5,q.l|0||1))})}
+ return out}
+
+/* ---------- a generated "player" base, built from the same catalog as yours */
+function botBase(d){const L=cl(S.lvl+ri(-1,1),1,5),terr=Math.max(0,(S.terr||0)+ri(-1,1)),n=Math.min(8,2*Math.ceil((4+L+terr)/2)),H0=(7-n/2)*2,H1=H0+n*2;
+ const used=new Set(),put=(x,y,s)=>{for(let i=0;i<s;i++)for(let j=0;j<s;j++)used.add((x+i)+","+(y+j))},can=(x,y,s)=>{for(let i=0;i<s;i++)for(let j=0;j<s;j++)if(used.has((x+i)+","+(y+j)))return false;return true};
+ put(12,12,4);const out=[],add=(t,l)=>{const s=B[t].s;for(let k=0;k<60;k++){const x=ri(H0,H1-s),y=ri(H0,H1-s);if(can(x,y,s)){put(x,y,s);out.push({t,x,y,l});return}}},un=t=>B[t].u<=L;
+ const eco=["corner","corner","chop","loan","racket","casino","hideout","hideout","front","wash","resto","club","farm","farm","lab","fent","hub","armory"].filter(un),
+  def=["sand","sand","turret","turret","mgnest","bunker","tower"].filter(un),ne=Math.min(14,4+2*L+Math.floor(d/15)),nd=Math.min(10,2+L+Math.floor(d/14)),mx=Math.min(5,L+1);
+ for(let i=0;i<ne;i++)add(pk(eco),ri(1,mx));for(let i=0;i<nd;i++)add(i?pk(def):"sand",ri(1,mx));
+ if(Math.random()<.75){const ring=[];for(let i=H0;i<H1;i++){ring.push([i,H0],[i,H1-1]);if(i>H0&&i<H1-1)ring.push([H0,i],[H1-1,i])}
+  for(const[x,y]of ring)if(Math.random()<.7&&can(x,y,1)){put(x,y,1);out.push({t:"fence",x,y,l:1})}}
+ return{L,list:out}}
+
+function makeBase(op){const d=op.d,bl=[],fn=[],L=op.lvl||1,hq=(160+26*d)*RC.bm*(1+.08*(L-1));
+ bl.push({t:"hq",x:6,y:6,s:2,l:L,hp:hq,mh:hq});
+ for(const q of op.list){if(q.t==="fence")fn.push({t:"fence",x:q.x/2,y:q.y/2,s:.5,l:q.l||1,hx:q.x,hy:q.y,hp:1,mh:1});else bl.push(mkQ(q.t,q.x,q.y,q.l||1,d))}
+ const FS=new Set(fn.map(f=>f.hx+","+f.hy));fn.forEach(f=>f.nb=[FS.has((f.hx+1)+","+f.hy),FS.has((f.hx-1)+","+f.hy),FS.has(f.hx+","+(f.hy+1)),FS.has(f.hx+","+(f.hy-1))]);
+ return{bl,fn}}
+
+/* ---------- scouting: a real player's base (when one is lined up) or a generated one; the player can't tell which */
+function newBase(){let op=null;const c=X.cache;
+ if(c&&c.exp>Date.now()&&Math.random()<X.realP){op=c.op;X.cache=null;prefetch()}
+ if(!op){const g=scoutBot(),bb=botBase(g.d);op={n:fakeName(),d:g.d,l:g.l,lc:0,lvl:bb.L,list:sanitize(bb.list)}}
+ const{bl,fn}=makeBase(op),th=ri(0,3),hue=ri(0,359);
+ RB={ph:"scout",g:{n:op.n,d:op.d,l:op.l,lc:op.lc||0,lvl:op.lvl,tk:op.tk||null},bl,fn,th,hue,units:[],groups:[],sel:0,x5:0,tl:RC.time,started:0,shots:[],pct:0,stars:0,hqd:0,key:"",id:Math.random()};
+ const P=power(),r=P/op.d;RB.vd=r>=1.25?"🟢 Looks easy":r>=.95?"🟡 A fair fight":r>=.75?"🟠 A bit tougher than you":"🔴 Very tough";rhud()}
+
+/* ---------- drawing: the real base art (BM.dBld), same as your own base */
+function rvBld(q,T){const[sx,sy]=sc(q.x,q.y),dd=q.hp<=0,hq=q.t==="hq",s=q.s,D=B[q.t]||{},h=hq?34+q.l*12:(D.h||16)+q.l*(s<1?3:5),
+ hx=q.hx==null?6:q.hx,hy=q.hy==null?6:q.hy;
+ const z=BM.dBld(hq?"safe":q.t,sx,sy,s,h,{lv:q.l,dm:dd?1:0,T,sd:hx*.7+hy*1.3,fire:!!(RB.started&&!dd&&q.def),nb:q.nb||null});
+ if(dd){smoke(sx,sy,s,h,{x:hx,y:hy},T);return}
+ if(q.t!=="fence"&&q.hp<q.mh){const w=Math.max(24,s*30),y=sy+s*TH/2-(z||h)-18;ctx.fillStyle="#000";ctx.fillRect(sx-w/2,y,w,5);ctx.fillStyle=q.hp/q.mh>.4?"#55b874":"#e0554f";ctx.fillRect(sx-w/2+1,y+1,(w-2)*q.hp/q.mh,3)}}
+
+/* ---------- raid result (real targets are settled by the server) */
+function raidFinish(){if(RB.ph!=="battle")return;RB.ph="done";try{Snd.stopRaid()}catch(_){}
+ const st=RB.stars,pct=RB.pct,g=RB.g,real=!!g.tk,loot=real?0:Math.floor(g.l*pct/100);let lost=0,hurt=0,vl=[];
+ for(const u of RB.units)if(u.hp<=0){if(R()<(u.v?.4:.6)){lost++;S.u.lack=Math.max(0,S.u.lack-1);if(u.v){const i=S.vets.indexOf(u.v);if(i>=0)S.vets.splice(i,1);vl.push(u.v.n)}}else hurt++}
+ S.dirty+=loot;S.resp=cl(S.resp+(st?3*st:-3));S.heat=cl(S.heat+3+3*st);const tk=st>=2;S.rv=(S.rv||0)+1;
+ const ok=st>0;ok?Snd.win():Snd.lose();paused=true;
+ $("mb").innerHTML=`<h3>${tk?"💥 Base Crushed!":ok?"Raid Complete":"Raid Failed"}</h3><p style="font-size:34px;text-align:center;margin:4px 0">${"⭐".repeat(st)}${"☆".repeat(3-st)}</p><p><b>${pct}%</b> of <b>${esc(g.n)}</b>'s base destroyed.<br>💰 Loot: <b id="rlt">${real?"counting…":"+$"+f(loot)+" dirty cash"}</b><br>⭐ Respect ${st?"+"+3*st:"-3"} · 🔥 Heat +${3+3*st}${tk?"<br>💥 Their base is wrecked. Land no longer changes hands: grow your turf by upgrading your Safehouse.":""}</p><p class="mu">${lost?`💀 ${lost} crew lost${vl.length?" ("+vl.join(", ")+")":""}. `:""}${hurt?`🩹 ${hurt} wounded crew recovered. `:""}${!lost&&!hurt?"Everyone came home alive. ":""}${st<2?"Tip: arm your crew in the 🛒 Shop and recruit more before the next raid.":""}</p><div class="pgb"><span></span><button onclick="raidHome()">Return Home ▶</button></div>`;
+ $("md").style.display="flex";rhud();
+ if(real)KPAcct.req("POST","/api/raid",{ticket:g.tk,pct,stars:st},{timeout:10000}).then(r=>{let t;
+  if(r.ok){const d=r.d.dirty|0,c=r.d.cash|0;S.dirty+=d;S.cash+=c;t=d||c?"+$"+f(d)+" dirty cash"+(c?" and +$"+f(c)+" cash":""):"nothing, their stash was empty";save();render();hud()}
+  else t="not claimed ("+(r.off?"couldn't reach the server":(r.d.error||"error"))+")";
+  const e=document.getElementById("rlt");if(e)e.textContent=t})}
+
+/* ---------- real players: line up a target ahead of time, and collect what raiders took while I was away */
+async function prefetch(){if(X.fetching||!KPAcct.a||(X.cache&&X.cache.exp>Date.now()+60e3))return;X.fetching=1;
+ try{const r=await KPAcct.req("GET","/api/opponent?lvl="+S.lvl+"&pw="+Math.round(power()),null,{timeout:6000});
+  if(r.ok&&r.d.opponent){const o=r.d.opponent;X.cache={exp:Date.now()+15*60e3,op:{n:o.n,d:Math.max(3,Math.round(o.pw)),l:o.l,lc:o.lc,lvl:o.lvl,tk:o.ticket,list:sanitize(o.b)}}}}
+ catch(e){}finally{X.fetching=0}}
+const when=t=>{const m=Math.max(1,Math.round((Date.now()-t)/6e4));return m<60?m+" min ago":m<1440?Math.floor(m/60)+" h ago":Math.floor(m/1440)+" d ago"};
+async function poll(){if(X.polling||!KPAcct.a||RB||ev||paused||document.hidden||$("md").style.display==="flex")return;X.polling=1;
+ try{const r=await KPAcct.req("GET","/api/inbox",null,{timeout:8000});if(!r.ok)return;
+  const items=r.d.items||[],seen=new Set(S.rxIds||[]),fresh=items.filter(i=>!seen.has(i.id));
+  if(r.d.shield>(S.shield||0))S.shield=r.d.shield;
+  if(!items.length)return;
+  const rows=fresh.map(it=>{const d=Math.min(Math.floor(S.dirty),it.dirty),c=Math.min(Math.floor(S.cash),it.cash);S.dirty-=d;S.cash-=c;
+   return`<p>🏴 <b>${esc(it.from)}</b> pulled up on you ${when(it.t)} and hit <b>${it.pct}%</b> of your base ${"⭐".repeat(it.stars)}.<br>They stole <b>$${f(d)}</b> dirty cash${c?` and <b>$${f(c)}</b> cash`:""}.</p>`});
+  S.rxIds=(S.rxIds||[]).concat(items.map(i=>i.id)).slice(-40);save();
+  await KPAcct.req("POST","/api/inbox/ack",{ids:items.map(i=>i.id),prof:profile()},{timeout:8000});
+  if(rows.length){md("🚨 You were raided!",rows.join("")+`<p>🛡️ A <b>12-hour rival-gang shield</b> is up: other players can't raid you. Cops, the FBI and cartels still can.</p><p class="mu">Launder your dirty cash and build up your defenses so raiders find less to take.</p>`);Snd.lose();render();hud()}}
+ catch(e){}finally{X.polling=0}}
+
+function init(){setInterval(prefetch,45000);setInterval(poll,45000);setTimeout(()=>{prefetch();poll()},5000)}
+
+Object.assign(X,{shielded,shieldLine,fakeName,profile,newBase,rvBld,raidFinish,prefetch,poll,init,sanitize,botBase,makeBase});
 return X})();
 </script>
 <script>
@@ -1005,15 +1114,15 @@ const enemyPow=kd=>kd==="cartel"?14+S.lvl*9+S.heat*.5:kd==="gang"?(8+S.lvl*6+S.t
 function estRange(en){const t=Math.max(1,tw()),sp=[.4,.3,.22,.15][Math.min(3,t-1)],w=en*2*sp,lo=en-w*(.25+Math.random()*.5),r=en>=100?10:en>=30?5:1;
 return[Math.max(1,Math.floor(lo/r)*r),Math.max(2,Math.ceil((lo+w)/r)*r)]}
 function resolveRaid(kd,en0){
-const fed=kd==="fbi",gg=kd==="gang",ca=kd==="cartel",lawK=fed||kd==="cop";
+const fed=kd==="fbi",gg=kd==="gang",ca=kd==="cartel",lawK=fed||kd==="cop",who=gg?(RX.who||RX.fakeName()):"";
 const en=en0!=null?en0:enemyPow(kd);
 const pw=power()*(.8+Math.random()*.4)*defM()+defPow()*(.9+Math.random()*.2),win=ADM.force==="win"?true:ADM.force==="lose"?false:pw>=en,sh=Math.min(.5,.1*fr()),lw=lawK&&S.law&&paid()?LAWS[S.law-1]:0,la=lawK&&S.law&&paid()?LAWA[S.law-1]:0;S.resp=Math.max(0,Math.min(100,S.resp+(win?5:-5)));
 const lose=(q,r)=>{const x=Math.floor(S.u[q]*r);S.u[q]-=x;return x};
 let bail=0;const arrest=(q,r)=>{const full=Math.floor(S.u[q]*r),c=Math.floor(S.u[q]*r*(1-la));S.u[q]-=c;bail+=full-c;return c};
 let h;
-if(win){const c=arrest("lack",fed?.2:.08);S.heat=Math.max(0,S.heat-(fed?25:15));h=`Your crew held the line. ${c} lackeys lost.`}
+if(win){const c=arrest("lack",fed?.2:.08);S.heat=Math.max(0,S.heat-(fed?25:15));h=(gg?who+" pulled up, but y":"Y")+`our crew held the line. ${c} lackeys lost.`}
 else if(ca){const c=lose("lack",.45),d=Math.floor(S.dirty*.35),q=Math.floor(S.cash*.15);S.dirty-=d;S.cash-=q;["coke","fent"].forEach(x=>S[x]=Math.floor(S[x]*.5));const hb=S.b.find(b=>b.t==="hub"&&!b.d);if(hb)hb.d=1;S.heat=Math.max(0,S.heat-5);h=`Cartel gunmen took $${f(d)} dirty and $${f(q)} clean cash, half your coke and fentanyl, ${c} lackeys, and wrecked your Trading Hub.`}
-else if(gg){const c=lose("lack",.25),d=Math.floor(S.dirty*.25);S.dirty-=d;h=`A rival gang looted $${f(d)} dirty cash and dragged off ${c} lackeys.`}
+else if(gg){const c=lose("lack",.25),d=Math.floor(S.dirty*.25);S.dirty-=d;S.shield=(RX.now||Date.now())+432e5;h=`${who} pulled up, looted $${f(d)} dirty cash and dragged off ${c} lackeys. 🛡️ A 12-hour rival-gang shield now protects you from other players. Cops and the feds can still come.`}
 else if(!fed){const c=arrest("lack",.25),d=Math.floor(S.dirty*.15*(1-sh)*(1-lw));S.dirty-=d;S.heat=Math.max(0,S.heat-8);h=`Cops seized $${f(d)} dirty cash and collared ${c} lackeys.`}
 else{const c=arrest("lack",.7);lose("farm",.3);lose("chem",.3);const m=(1-sh)*(1-lw),d=Math.floor(S.dirty*.6*m),q=Math.floor(S.cash*.35*m);
 S.dirty-=d;S.cash-=q;["weed","meth","guns","fent","coke"].forEach(x=>S[x]=Math.floor(S[x]*(1-.5*m)));
@@ -1021,19 +1130,19 @@ const ok=S.b.filter(b=>!b.d).sort(()=>Math.random()-.5),n=Math.min(ok.length,Mat
 for(let i=0;i<n;i++)ok[i].d=1;S.heat=35;const sites=ok.slice(0,n).filter(b=>b.q).length;
 h=`Feds seized $${f(d)} dirty cash, $${f(q)} clean cash and half your stock. ${c} lackeys gone, ${n} buildings wrecked.`+(S.mg[0]||S.mg[1]?"":" Recruit and repair.")+(sites?` ${sites} construction site${sites>1?"s were":" was"} hit and paused until repaired.`:"")}
 if(bail>0)h+=` ⚖️ Your lawyer got ${bail} lackeys released.`;
-return{win,pw,en,h,t:(ca?"🌴 Cartel Raid":gg?"🏴 Gang Raid":fed?"🚔 FBI Raid":"🚓 Police Raid")+(win?": Repelled":": You Lost")}}
-function raid(kd,en0){const r=resolveRaid(kd,en0);md(r.t,`<p>Your fighting power <b>${r.pw.toFixed(0)}</b> vs theirs <b>${r.en.toFixed(0)}</b>. Higher power wins.${defPow()>0?` Your 🛡️ defenses add <b>${defPow().toFixed(0)}</b>.`:""}</p><p>${r.h}</p><p class="mu">${raidTip(r)}</p>${S.mg[0]||S.mg[1]?`<p class="mu">Your managers are already cleaning up.</p>`:""}`);r.win?Snd.win():Snd.lose();render()}
+return{win,pw,en,h,who,t:(ca?"🌴 Cartel Raid":gg?"🏴 "+who+" Pulled Up":fed?"🚔 FBI Raid":"🚓 Police Raid")+(win?": Repelled":": You Lost")}}
+function raid(kd,en0){RX.who=(ev&&ev.who)||"";const r=resolveRaid(kd,en0);RX.who="";md(r.t,`<p>Your fighting power <b>${r.pw.toFixed(0)}</b> vs theirs <b>${r.en.toFixed(0)}</b>. Higher power wins.${defPow()>0?` Your 🛡️ defenses add <b>${defPow().toFixed(0)}</b>.`:""}</p><p>${r.h}</p><p class="mu">${raidTip(r)}</p>${S.mg[0]||S.mg[1]?`<p class="mu">Your managers are already cleaning up.</p>`:""}`);r.win?Snd.win():Snd.lose();render()}
 function startRaid(force){if(ev){S.raidIn=6;return}
-const fed=S.lvl>=3&&S.heat>=60&&Math.random()<.6,gg=!fed&&(S.lvl>=2||S.terr>0||gangBoost()>0)&&Math.random()<.3+gangBoost(),ca=!fed&&cnt("hub")>0&&Math.random()<.4,kd=force||(fed?"fbi":ca?"cartel":gg?"gang":"cop");
+const fed=S.lvl>=3&&S.heat>=60&&Math.random()<.6,gg=!fed&&!RX.shielded()&&(S.lvl>=2||S.terr>0||gangBoost()>0)&&Math.random()<.3+gangBoost(),ca=!fed&&cnt("hub")>0&&Math.random()<.4,kd=force||(fed?"fbi":ca?"cartel":gg?"gang":"cop");
 if(!force&&kd==="cop"&&S.heat<12)return;
 if(!force){const sk=skipRaid(kd);if(sk){S.raidIn=50+Math.random()*50;toast(sk==="truce"?"🤝 The truce held: a rival gang stood down.":"🕵️ Your inside man quietly buried a "+(kd==="fbi"?"federal":"police")+" operation against you.");return}}
-const mo=(kd==="cop"||kd==="fbi")&&S.mole&&paid();let w=Math.min(24,8*tw());if(w===0&&mo)w=6+4*S.mole;const en=enemyPow(kd);ev={k:"raid",kd,t:0,ph:0,w,en,est:w>0?estRange(en):null};if(kd==="cop"||kd==="fbi")Snd.chatter();cancel();AG=[];V=[];
-if(w>0)Snd.alarm(4),toast((tw()>0?"🗼 Lookouts spot ":"🕵️ Your inside man warns of ")+({fbi:"the FBI and SWAT",gang:"a rival gang",cartel:"cartel enforcers",cop:"the police"})[kd]+" on the way! Arriving in "+w+"s. Estimated strength "+ev.est[0]+"-"+ev.est[1]+". Check your power!");else mkV()}
+const mo=(kd==="cop"||kd==="fbi")&&S.mole&&paid();let w=Math.min(24,8*tw());if(w===0&&mo)w=6+4*S.mole;const en=enemyPow(kd);ev={k:"raid",kd,t:0,ph:0,w,en,est:w>0?estRange(en):null,who:kd==="gang"?RX.fakeName():""};if(kd==="cop"||kd==="fbi")Snd.chatter();cancel();AG=[];V=[];
+if(w>0)Snd.alarm(4),toast((tw()>0?"🗼 Lookouts spot ":"🕵️ Your inside man warns of ")+({fbi:"the FBI and SWAT",gang:ev.who||"a rival crew",cartel:"cartel enforcers",cop:"the police"})[kd]+" on the way! Arriving in "+w+"s. Estimated strength "+ev.est[0]+"-"+ev.est[1]+". Check your power!");else mkV()}
 const SIDES=[[0,-1],[0,1],[1,0],[-1,0]];
 function ring(v,r,lat){return[7+v.dx*r-v.dy*lat-.5,7+v.dy*r+v.dx*lat-.5]}
 function mkV(){const kd=ev.kd,qs=kd==="fbi"?["fbi","swat","fbi","swat"]:kd==="gang"?["van","van","van","van"]:kd==="cartel"?["cart","cart","cart","cart"]:["cop","cop","cop","cop"],off=Math.floor(Math.random()*4);
 V=qs.map((q,i)=>{const[dx,dy]=SIDES[(i+off)%4],tx=dy?6.5:dx<0?-.6:G+.6,ty=dy?(dy<0?-.6:G+.6):6.5,d=7+Math.random()*2.5;return{q,dx,dy,tx,ty,x:tx+dx*d,y:ty+dy*d}});
-Snd.arrive(kd,V.map(v=>Math.hypot(v.tx-v.x,v.ty-v.y)/3));toast(((kd==="cop"||kd==="fbi")&&S.mole&&paid()?"🕵️ Inside man sabotaged part of their op. ":"")+(kd==="fbi"?"🚔 FBI and SWAT are pulling up!":kd==="gang"?"🏴 A rival gang is rolling in!":kd==="cartel"?"🌴 Cartel enforcers are rolling in!":"🚓 Police are pulling up!"))}
+Snd.arrive(kd,V.map(v=>Math.hypot(v.tx-v.x,v.ty-v.y)/3));toast(((kd==="cop"||kd==="fbi")&&S.mole&&paid()?"🕵️ Inside man sabotaged part of their op. ":"")+(kd==="fbi"?"🚔 FBI and SWAT are pulling up!":kd==="gang"?"🏴 "+(ev.who||"A rival crew")+" is rolling in!":kd==="cartel"?"🌴 Cartel enforcers are rolling in!":"🚓 Police are pulling up!"))}
 const AC={cop:"#2b4a9a",fbi:"#14161b",gang:"#a02020",cartel:"#3d5f2a"};
 function endEv(){Snd.stopRaid();ev=null;V=[];AG=[];ws.forEach(w=>{w.fx=null})}
 const defCounts=()=>{const c={lack:S.u.lack,sand:0,turret:0,mg:0,bunker:0};S.b.forEach(b=>{if(b.d||(b.q&&b.q.k==="new"))return;if(b.t==="sand")c.sand++;else if(b.t==="turret")c.turret++;else if(b.t==="mgnest")c.mg++;else if(b.t==="bunker")c.bunker++});return c};
@@ -1217,7 +1326,7 @@ function bsMenu(){const rsOn=typeof rs!=="undefined"&&rs,C=[["ac","👤","Accoun
 return{title:MTTL.menu,pills:"",body:`<div class="bs-note">Earn dirty cash, launder it, grow the crew, expand turf. Heat attracts raids: cops early, the FBI once you are big. Progress saves in this browser (log in below to keep it on every device), and your empire keeps earning (and getting raided) while you are away.</div><div class="bs-row">${C.map(c=>bsGC({id:"m"+c[0],nm:c[2],e:c[1],l:"",r:"",pr:c[4],act:c[5],st:c[6],info:`<b>${c[1]} ${c[2]}</b><br>${c[3]}`,card:`bsInfo('m${c[0]}')`})).join("")}</div>`}}
 // ---- Raid
 function bsRaid(){const P=power(),no=S.u.lack<1;const star=(id,n,e,l,t)=>bsGC({id,nm:n,e,l,r:"",pr:"Details",act:`bsInfo('${id}')`,st:"bz",info:t,card:`bsInfo('${id}')`});
-return{title:MTTL.raid,pills:"",body:`<div class="bs-note">Scout a random rival gang's turf, check their loot and defenses, then raid it or move on. Crew ready: <b>${S.u.lack}</b> · Fighting power <b>${P.toFixed(0)}</b>. You deploy your whole crew with their gear, so arm up first.</div><div class="bs-row">${bsGC({id:"rs",nm:"Scout a Turf",e:"🔍",l:"Crew: "+S.u.lack,r:"Power "+P.toFixed(0),pr:"Scout",act:no?"bsMsg('You need at least 1 lackey.')":"scoutStart()",st:no?"no":"ok",info:"<b>🔍 Scout a Turf</b><br>The screen fades to another part of the city. Check the verdict, then raid it or keep scouting. Targets are matched to your strength: some easy, some a bit tougher.",card:"bsInfo('rs')"})}${star("s1","★ One Star","⭐","50% destroyed","<b>★ One star</b><br>Destroy 50% of their buildings.")}${star("s2","★★ Two Stars","🌟","Safehouse falls","<b>★★ Two stars</b><br>Also destroy their Safehouse.")}${star("s3","★★★ Three Stars","💫","Total destruction","<b>★★★ Three stars</b><br>Destroy everything. Loot grows with how much you destroy. Raids pay dirty cash and respect (no land: that comes from upgrading your Safehouse).")}</div>`}}
+return{title:MTTL.raid,pills:"",body:`<div class="bs-note">Find another player's base, check their loot and defenses, then raid it or move on. Their defenses are the same ones you can buy and upgrade in your own base. Crew ready: <b>${S.u.lack}</b> · Fighting power <b>${P.toFixed(0)}</b>. You deploy your whole crew with their gear, so arm up first.</div>${RX.shieldLine()}<div class="bs-row">${bsGC({id:"rs",nm:"Find a Base",e:"🔍",l:"Crew: "+S.u.lack,r:"Power "+P.toFixed(0),pr:"Scout",act:no?"bsMsg('You need at least 1 lackey.')":"scoutStart()",st:no?"no":"ok",info:"<b>🔍 Find a Base</b><br>The screen fades to another part of the city. Check the verdict, then raid it or keep scouting. Targets are matched to your strength: some easy, some a bit tougher.",card:"bsInfo('rs')"})}${star("s1","★ One Star","⭐","50% destroyed","<b>★ One star</b><br>Destroy 50% of their buildings.")}${star("s2","★★ Two Stars","🌟","Safehouse falls","<b>★★ Two stars</b><br>Also destroy their Safehouse.")}${star("s3","★★★ Three Stars","💫","Total destruction","<b>★★★ Three stars</b><br>Destroy everything. Loot grows with how much you destroy. Raids pay dirty cash and respect (no land: that comes from upgrading your Safehouse).")}</div>`}}
 // ---- Staff
 function bsTier(key,ico,T,cur,eff){return T.map((t,i)=>{const own=cur>i,nxt=cur===i,lk=t[3]>S.lvl,ok=nxt&&!lk&&S.cash>=t[1];const need=!own&&!nxt;
 return bsGC({id:key+i,nm:t[0],e:ico,l:"$"+t[2]+"/s wage",r:"Tier "+(i+1)+"/"+T.length,pr:own?"✅ On payroll":need?"🔒":(cur?"Upgrade ":"Hire ")+"$"+bsN(t[1]),act:ok?`staff('${key}')`:`bsMsg('${own?"Already on your payroll.":need?"Hire the previous tier first.":lk?"Needs Safehouse Lv"+t[3]+".":"Not enough cash."}')`,st:own?"own":need||lk?"lk":ok?"ok":"no",rq:need?"Hire the<br>previous first":lk&&!own?`Safehouse Lv${t[3]}<br>Required`:"",info:`<b>${ico} ${t[0]}</b><br>${eff(i)}`,card:`bsInfo('${key}${i}')`})}).join("")}
@@ -1974,7 +2083,7 @@ const MG=[["Property Manager","🔧",5000,2,2,"Automatically repairs wrecked bui
 const paid=()=>S.cash>.5,wage=()=>(S.fx?FXW[S.fx-1]:0)+(S.hz&&S.hz.arch?hzWage(S.hz.arch):0)+(S.law?LAW[S.law-1][2]:0)+(S.mole?MOLE[S.mole-1][2]:0)+S.mg.reduce((a,x,i)=>a+(x?MG[i][4]:0),0),moleM=()=>S.mole&&paid()?1-MOLP[S.mole-1]:1;
 let paused=false,EC=null,ECt="";
 function closeMd(){$("md").style.display="none";paused=false;KPAcct.mdClosed()}
-function pickKind(){const fed=S.lvl>=3&&S.heat>=60&&Math.random()<.6,gg=!fed&&(S.lvl>=2||S.terr>0||gangBoost()>0)&&Math.random()<.3+gangBoost(),ca=!fed&&cnt("hub")>0&&Math.random()<.4;return fed?"fbi":ca?"cartel":gg?"gang":"cop"}
+function pickKind(){const fed=S.lvl>=3&&S.heat>=60&&Math.random()<.6,gg=!fed&&!RX.shielded()&&(S.lvl>=2||S.terr>0||gangBoost()>0)&&Math.random()<.3+gangBoost(),ca=!fed&&cnt("hub")>0&&Math.random()<.4;return fed?"fbi":ca?"cartel":gg?"gang":"cop"}
 function skipRaid(kd){if(kd==="gang"&&S.noGang){S.noGang=0;return"truce"}
 if((kd==="cop"||kd==="fbi")&&S.mole&&paid()&&Math.random()<MOLS[S.mole-1]*(kd==="fbi"?.7:1))return"mole";return false}
 // managers: repair wrecks and rehire lost crew. L = offline log (or null when online)
@@ -2072,14 +2181,14 @@ for(const q in S.u)if(S.u[q]>(S.want[q]||0))S.want[q]=S.u[q];
 const sn={cash:S.cash,dirty:S.dirty,weed:S.weed,meth:S.meth,guns:S.guns,fent:S.fent,coke:S.coke,heat:S.heat,lack:S.u.lack,deal:S.u.deal},wr0=S.b.filter(b=>b.d).length,L={rep:0,repC:0,hire:{},hireC:0,raids:[],quiet:0,done:[]},mg=()=>{if(S.mg[0]||S.mg[1]){let n=0;while(mgrStep(L)&&++n<500);}};
 let t=0,rt=1800+Math.random()*1800;
 while(t<t0){const dt=Math.min(20,t0-t);t+=dt;OFFL=1;econ(dt*eff);bxTick(dt*eff);hzTick(dt*eff);S.hzOff=(S.hzOff||0)+hzLiq(dt);OFFL=0;bTick(dt,L);rt-=dt;
-if(rt<=0){rt=1800+Math.random()*1800;if(S.heat>=8||S.lvl>=2){const kd=pickKind();if(!(kd==="cop"&&S.heat<12)){const sk=skipRaid(kd);if(sk)L.quiet++;else{const r=resolveRaid(kd,enemyPow(kd));L.raids.push({kd,win:r.win,h:r.h});mg()}}}}
+if(rt<=0){rt=1800+Math.random()*1800;RX.now=Date.now()-(secs-t)*1000;if(S.heat>=8||S.lvl>=2){const kd=pickKind();if(!(kd==="cop"&&S.heat<12)){const sk=skipRaid(kd);if(sk)L.quiet++;else{const r=resolveRaid(kd,enemyPow(kd));L.raids.push({kd,win:r.win,h:r.h,who:r.who});mg()}}}}
 mg()}
-S.raidIn=50+Math.random()*50;S.t=Date.now();
+RX.now=0;S.raidIn=50+Math.random()*50;S.t=Date.now();
 const nm={cop:"🚓 Police",fbi:"🚔 FBI",gang:"🏴 Rival gang",cartel:"🌴 Cartel"},ln=[];
 ln.push(`<p>You were away <b>${fmtT(secs)}</b>${secs>t0?` (earnings capped at ${fmtT(t0)})`:""}. Offline earnings are paid at <b>${Math.round(eff*100)}%</b> of your normal rate.${eff<OFF.max?" Hire Managers in the Staff tab to raise it.":""}</p>`);
 const gl=[["💵 Clean cash",S.cash-sn.cash,"$"],["💰 Dirty cash",S.dirty-sn.dirty,"$"],["🌿 Weed",S.weed-sn.weed],["⚗️ Meth",S.meth-sn.meth],["🔫 Guns",S.guns-sn.guns],["💉 Fentanyl",S.fent-sn.fent],["❄️ Cocaine",S.coke-sn.coke]].filter(x=>Math.abs(x[1])>=1);
 if(gl.length)ln.push("<p>"+gl.map(x=>`${x[0]}: <b>${sg(x[1],x[2])}</b>`).join("<br>")+`<br>🔥 Heat: ${Math.floor(sn.heat)} → ${Math.floor(S.heat)}</p>`);
-if(L.raids.length)ln.push("<p><b>Raids while you were out</b><br>"+L.raids.map(r=>`${nm[r.kd]}: ${r.win?"repelled":"you lost"}. ${r.h}`).join("<br>")+"</p>");
+if(L.raids.length)ln.push("<p><b>Raids while you were out</b><br>"+L.raids.map(r=>r.who?`🏴 ${r.h}`:`${nm[r.kd]}: ${r.win?"repelled":"you lost"}. ${r.h}`).join("<br>")+"</p>");
 if(S.hzOff>0){ln.push("<p><b>💼 Heist take</b><br>Your architect cleaned <b>$"+f(S.hzOff)+"</b> while you were away, at full value.</p>");S.hzOff=0}if(S.hzL&&S.hzL.length){ln.push("<p><b>🎭 Heists</b><br>"+S.hzL.join("<br>")+"</p>");S.hzL=[]}if(S.bxL&&S.bxL.length){ln.push("<p><b>💼 Bribery</b><br>"+S.bxL.join("<br>")+"</p>");S.bxL=[]}if(L.quiet)ln.push(`<p>${L.quiet} operation${L.quiet>1?"s were":" was"} called off (inside man or truce).</p>`);
 const hc=Object.values(L.hire).reduce((a,b)=>a+b,0);
 if(L.rep||hc)ln.push(`<p>${L.rep?`🔧 Property Manager repaired ${L.rep} building${L.rep>1?"s":""} ($${f(L.repC)}).<br>`:""}${hc?`🧑‍✈️ Crew Boss hired ${hc} replacement${hc>1?"s":""} ($${f(L.hireC)}).`:""}</p>`);
@@ -2468,8 +2577,8 @@ const DEF={gun:["Gunman Post","🔫",3.2,"#8a3a3a",26],snip:["Sniper Nest","🎯
 const RBT=[["stash","💰","Stash House","#a08a2a",16],["lab","🧪","Drug Lab","#3a8a5a",18],["hus","💵","Street Hustle","#6a7a3a",14],["hide","🏚️","Hideout","#5d6878",18]];
 const DIS=["Harbor District","Downtown","Industrial Zone","Old Quarter"],GRD=[["#1b222b","#171d25"],["#1f2420","#1a1f1b"],["#241f26","#1f1a22"],["#262219","#211e15"]];
 function fadeTo(fn){const f=$("fd");f.style.pointerEvents="auto";f.style.opacity=1;setTimeout(()=>{fn();setTimeout(()=>{f.style.opacity=0;f.style.pointerEvents="none"},300)},550)}
-function rd(){const P=power();return`<div class="mu">Scout a random rival gang's turf, check their loot and defenses, then raid it or move on. Crew ready: <b>${S.u.lack}</b> · Fighting power <b>${P.toFixed(0)}</b></div>
-<div class="card"><div><b>🔍 Scout a Turf</b><div class="mu">The screen fades to another part of the city. Check the verdict, then raid it or keep scouting.</div></div><button ${S.u.lack<1?"disabled":""} onclick="scoutStart()">Scout</button></div>
+function rd(){const P=power();return`<div class="mu">Find another player's base, check their loot and defenses, then raid it or move on. Their defenses are the same ones you can buy and upgrade in your own base. Crew ready: <b>${S.u.lack}</b> · Fighting power <b>${P.toFixed(0)}</b></div>
+<div class="card"><div><b>🔍 Find a Base</b><div class="mu">The screen fades to another part of the city. Check the verdict, then raid it or keep scouting.</div></div><button ${S.u.lack<1?"disabled":""} onclick="scoutStart()">Scout</button></div>
 <div class="mu">⭐ <b>Stars:</b> 1★ destroy 50% of their buildings · 2★ also destroy their Safehouse · 3★ destroy everything. Loot grows with how much you destroy. Raids pay dirty cash and respect (no land: that comes from upgrading your Safehouse). Targets are matched to your strength, some easy and some a bit tougher. You deploy your whole crew with their gear, so arm up first.</div>`}
 function scoutStart(){if(S.u.lack<1)return toast("You need at least 1 lackey.");if(ev||RB)return toast("Wait for the current action to finish.");Snd.click();fadeTo(()=>{RBcam=[cz,cx,cy];RB={};cancel();tab=0;si=null;render();document.body.classList.add("rb");cz=1;cx=0;cy=0;applyCam();newBase()})}
 function newBase(){const g=scoutBot(),d=g.d,bl=[],used=new Set(),th=ri(0,3),hue=ri(0,359);
@@ -2518,7 +2627,7 @@ $("mb").innerHTML=`<h3>${tk?"💥 Rival Crushed!":ok?"Raid Complete":"Raid Faile
 function rhud(){const e=$("rh");if(!RB){e.innerHTML="";return}if(!$("rt")){e.innerHTML=`<div id="rt"></div><div id="ri"></div><div id="rc"></div>`}
 const g=RB.g,m=(a)=>Math.round(a/10)*10;
 if(RB.ph==="scout"){const kk="s"+RB.id;if(RB.key!==kk){RB.key=kk;const dc={};RB.bl.forEach(b=>{if(b.def)dc[b.t]=(dc[b.t]||0)+1});
-$("ri").innerHTML=`<b style="font-size:20px">🏴 ${g.n}</b><div class="mu" style="margin:0 0 6px">📍 ${DIS[RB.th]} · ${RB.bl.length} buildings</div>💰 Est. loot: <b>$${f(m(g.l*.85))}–$${f(m(g.l*1.15))}</b><br>🛡️ Est. strength: <b>${Math.floor(g.d*.8)}–${Math.ceil(g.d*1.2)}</b> · yours <b>${power().toFixed(0)}</b><br><b>${RB.vd}</b><div style="margin-top:6px"><b>Defenses:</b> ${Object.keys(dc).map(t=>`${DEF[t][1]} ${DEF[t][0]} ×${dc[t]}`).join(" · ")}</div><div class="mu" style="margin:6px 0 0">Red rings = how far each defense can shoot.</div>`;
+$("ri").innerHTML=`<b style="font-size:20px">👤 ${g.n}</b><div class="mu" style="margin:0 0 6px">Safehouse Lv${g.lvl} · 📍 ${DIS[RB.th]} · ${RB.bl.length} buildings</div>💰 Est. loot: <b>$${f(m(g.l*.85))}–$${f(m(g.l*1.15))}</b>${g.lc>=10?` + <b>$${f(m(g.lc*.85))}–$${f(m(g.lc*1.15))}</b> cash`:""}<br>🛡️ Est. strength: <b>${Math.floor(g.d*.8)}–${Math.ceil(g.d*1.2)}</b> · yours <b>${power().toFixed(0)}</b><br><b>${RB.vd}</b><div style="margin-top:6px"><b>Defenses:</b> ${Object.keys(dc).map(t=>`${B[t].e} ${B[t].n} ×${dc[t]}`).join(" · ")}</div><div class="mu" style="margin:6px 0 0">Red rings = how far each defense can shoot.</div>`;
 $("ri").style.display="block";$("rc").innerHTML=`<div class="rbar"><button onclick="raidGo()">⚔️ RAID!</button><button class="sec" onclick="scoutNext()">➡️ Next Turf</button><button class="sec" onclick="raidHome()" style="margin-left:auto">🏠 Home</button></div>`;$("rt").innerHTML=""}return}
 $("ri").style.display="none";const t=Math.max(0,Math.ceil(RB.tl)),loot=Math.floor(g.l*RB.pct/100);
 $("rt").innerHTML=`<div class="rtop">⏱ ${Math.floor(t/60)}:${String(t%60).padStart(2,"0")} &nbsp; ${"⭐".repeat(RB.stars)}${"☆".repeat(3-RB.stars)} &nbsp; 💥 ${RB.pct}% &nbsp; 💰 $${f(loot)}</div>${RB.started?"":`<div class="rtop" style="margin-top:6px;font-size:15px">Tap the green area to place your crew</div>`}`;
@@ -2567,9 +2676,7 @@ for(const q of b.bl)if(q.def&&q.hp>0){const c=bctr(q);ctx.beginPath();for(let i=
 const L=[];
 for(const[cx0,cy0]of[[3,3],[11,3],[11,11],[3,11]])L.push({z:cx0+cy0,f:()=>{const[px,py]=sc(cx0,cy0);ctx.fillStyle="#2a2a2e";ctx.fillRect(px-1,py-30,2,30);poly([px+1,py-30,px+16,py-28+Math.sin(T*4+cx0)*2,px+1,py-20],`hsl(${b.hue},75%,50%)`);ctx.fillStyle="#1a1a1e";ctx.fillRect(px-3,py-1,6,3);const fl=Math.sin(T*10+cy0);ctx.fillStyle="rgba(255,150,40,.9)";ctx.beginPath();ctx.moveTo(px-2,py-31);ctx.lineTo(px,py-37-fl*1.5);ctx.lineTo(px+2,py-31);ctx.fill()}});
 for(let x=-3;x<17;x++)for(let y=-3;y<17;y++){if(x>=0&&x<14&&y>=0&&y<14)continue;const r=hs(x+b.th,y);if(r<.5){const[sx,sy]=sc(x,y);L.push({z:x+y+1,f:()=>box(sx,sy,1,6+hs(y,x)*34,PAL[Math.floor(hs(x+3,y+9)*8)])})}}
-for(const q of b.bl)L.push({z:q.x+q.y+q.s,f:()=>{const[sx,sy]=sc(q.x,q.y),dd=q.hp<=0,de=DEF[q.t],ty=RBT.find(z=>z[0]===q.t),h=dd?3:q.t==="hq"?44:de?de[4]:ty[4],col=q.t==="hq"?"#8d909c":de?de[3]:ty[3];
-rvBox(q,sx,sy,h,col,dd,T);if(!dd){label(sx,sy+q.s*TH/2-h+2,q.t==="hq"?"🏠":de?de[1]:ty[1]);if(q.t==="hq"){ctx.fillStyle=`hsl(${b.hue},70%,50%)`;ctx.fillRect(sx-1,sy-h-14,2,14);ctx.fillRect(sx+1,sy-h-14,10,6)}
-if(q.hp<q.mh){const w=q.s*28;ctx.fillStyle="#000";ctx.fillRect(sx-w/2,sy-h-6,w,5);ctx.fillStyle=q.hp/q.mh>.4?"#55b874":"#e0554f";ctx.fillRect(sx-w/2+1,sy-h-5,(w-2)*q.hp/q.mh,3)}}}});
+for(const q of b.bl)L.push({z:q.x+q.y+q.s,f:()=>RX.rvBld(q,T)});for(const q of b.fn||[])L.push({z:q.x+q.y+q.s,f:()=>RX.rvBld(q,T)});
 for(const u of b.units)if(u.hp>0)L.push({z:u.x+u.y+.6,f:()=>{const[sx,sy]=sc(u.x,u.y);if(u.at&&u.rng>1.5&&u.tg){const c=bctr(u.tg),p=sc(c[0],c[1]);ctx.strokeStyle="rgba(255,230,120,.8)";ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(sx,sy-9);ctx.lineTo(p[0],p[1]-8);ctx.stroke()}
 guy(sx,sy,S.gc||u.c,S.gc?(S.gc2||"#fff"):null,ctx);if(u.v){ctx.font="10px system-ui";ctx.textAlign="center";ctx.fillText("⭐",sx,sy-21)}if(u.hp<u.mh){ctx.fillStyle="#000";ctx.fillRect(sx-8,sy-26,16,3);ctx.fillStyle="#55b874";ctx.fillRect(sx-8,sy-26,16*u.hp/u.mh,3)}}});
 L.sort((a,b)=>a.z-b.z);L.forEach(q=>q.f());
@@ -2628,12 +2735,12 @@ const GL=[
 [()=>S.u.farm>0,"Open <b>👥 Crew</b> and recruit a <b>Farmer</b> 🧑‍🌾. A farm does nothing without one."],
 [()=>S.u.deal>0,"Recruit a <b>Dealer</b> 🧢 in <b>👥 Crew</b>. Dealers sell your product on the streets for you."],
 [()=>(S.sold||0)>0,"Your Dealer is now selling your weed on the streets by himself. Open <b>💊 Dealing</b> to choose where they sell and to train them."],
-[()=>(S.rv||0)>0||S.terr>0,"Open <b>⚔️ Raid</b>, press Scout, and raid a rival gang for dirty cash and respect. Targets are matched to your strength."],
+[()=>(S.rv||0)>0||S.terr>0,"Open <b>⚔️ Raid</b>, press Scout, and raid another player's base for dirty cash and respect. Targets are matched to your strength."],
 [()=>S.lvl>=5,()=>`Keep upgrading your 🏠 Safehouse (next: <b>$${f(UP[S.lvl])}</b>) to unlock stronger buildings and bigger bribes.`],
 [()=>S.lvl<3||S.hz.wins>0,()=>"🎭 <b>Heists are unlocked!</b> "+hzNext()],
 [()=>S.won,"Final goal: open <b>💼 Bribe</b>, hire a Fixer, and fund officials all the way up to <b>The President</b> ($4M in payoffs). Keep their upkeep paid."]];
 function raidBanner(){const e=$("rw");if(!ev||ev.k!=="raid"||!ev.est){e.style.display="none";return}
-const my=Math.max(.01,power()*defM()+defPow()),[lo,hi]=ev.est,nm={fbi:"FBI & SWAT",gang:"A rival gang",cartel:"Cartel enforcers",cop:"The police"}[ev.kd];
+const my=Math.max(.01,power()*defM()+defPow()),[lo,hi]=ev.est,nm={fbi:"FBI & SWAT",gang:ev.who||"A rival crew",cartel:"Cartel enforcers",cop:"The police"}[ev.kd];
 let wp=0;for(let i=0;i<=8;i++)wp+=Math.max(0,Math.min(1,(1.2-(lo+(hi-lo)*i/8)/my)/.4));wp/=9;
 const v=wp>=.9?["✅ You should hold them off.","var(--gn)"]:wp<=.1?["🚨 You will lose. Recruit lackeys or buy gear NOW.","var(--rd)"]:["⚠️ Too close to call. Reinforce if you can.","var(--ac)"];
 e.style.borderColor=v[1];e.innerHTML=`🗼 <b>${nm} ${ev.w>0?"arriving in "+Math.ceil(ev.w)+"s":"are here"}</b><br>Estimated enemy power: <b>${lo}–${hi}</b> · Your power: <b>${my.toFixed(0)}</b> · Win chance ~${Math.round(wp*100)}%<br><span style="color:${v[1]}">${v[0]}</span>`;e.style.display="block"}
@@ -2776,7 +2883,7 @@ function tut(n){if(n===99){tutSkip();$("md").style.display="none";paused=false;P
 Snd.setFly(airSpawn);try{new ResizeObserver(placeHint).observe($("pn"))}catch(e){}Snd.label();render();placeHint();resize();requestAnimationFrame(loop);
 try{if(!localStorage.getItem("kptut3")){const g=localStorage.getItem("kptg3");if(g!==null&&+g<TG.length){tgi=+g;tgCheck();render()}else if(S.b.length>=3||S.lvl>1){localStorage.setItem("kptut3","1")}else tut(0)}}catch(e){}
 if(OFF0>45)offlineRun(OFF0);
-KPAcct.init();
+KPAcct.init();newBase=RX.newBase;raidFinish=RX.raidFinish;RX.init();
 </script>
 <script>
 // Embedded audio (base64): chatter, heli, car, sirenR (raid siren), sirenD (distant siren), plane, pistol, rifle

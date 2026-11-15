@@ -4,6 +4,10 @@
    Run:   node server.js        then open http://localhost:3000
    It serves index.html AND the API from one origin, so there is no CORS setup.
 
+   Storage: Render's free disk is wiped on every restart/redeploy, which deletes accounts. To keep them, create a free
+            Upstash Redis database and set UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN. Without them the server
+            falls back to a local file (fine on your own PC, or on a host with a persistent disk: set DATA_FILE).
+
    Env:   PORT          (default 3000)
           DATA_FILE     where accounts are stored (default ./data/kingpin-db.json)
           GAME_FILE     the game page to serve   (default ./index.html)
@@ -19,25 +23,78 @@ const PORT = +process.env.PORT || 3000;
 const DB_FILE = process.env.DATA_FILE || path.join(__dirname, "data", "kingpin-db.json");
 const PAGE = process.env.GAME_FILE || path.join(__dirname, "index.html");
 const TRUST_PROXY = process.env.TRUST_PROXY === "1";
-const TOKEN_MS = 90 * 864e5, MAX_TOKENS = 10, MAX_SAVE = 2 * 1024 * 1024;
+const REDIS_URL = (process.env.UPSTASH_REDIS_REST_URL || "").replace(/\/$/, ""), REDIS_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN || "";
+const useRedis = !!(REDIS_URL && REDIS_TOKEN);
+const TOKEN_MS = 90 * 864e5, MAX_TOKENS = 10, MAX_SAVE = useRedis ? 700 * 1024 : 2 * 1024 * 1024;   // Upstash free tier caps a request at 1 MB
 const NAME_RE = /^[A-Za-z0-9_]{3,16}$/;
 const ADMIN_KEY = (process.env.ADMIN_USER || "smiley").toLowerCase();   // the one account that gets the in-game admin panel
 const isAdminKey = k => k === ADMIN_KEY;
+/* ---------- player raids: base snapshots, raid tickets, loot inbox, shield */
+const BTYPES = new Set(["corner","chop","loan","racket","casino","hideout","front","wash","resto","club","farm","lab","fent","hub","armory","fence","tower","sand","turret","mgnest","bunker"]);
+const SHIELD_MS = 12 * 36e5, PROF_MAX_AGE = 14 * 864e5, STEAL_DIRTY = 0.35, STEAL_CASH = 0.10;
+const tickets = new Map();   // raid ticket -> { att, tgt, exp }  (in memory; a restart just voids open raids)
+const num = (v, max) => { v = +v; return Number.isFinite(v) && v >= 0 ? Math.min(v, max) : 0; };
+function cleanProf(p) {      // the public "base snapshot" other players raid; sanitised, never trusted blindly
+  if (!p || typeof p !== "object" || !Array.isArray(p.b)) return null;
+  const b = [];
+  for (const q of p.b.slice(0, 400)) {
+    if (!q || !BTYPES.has(q.t)) continue;
+    const x = Math.floor(+q.x), y = Math.floor(+q.y), l = Math.floor(+q.l);
+    if (x >= 0 && x < 64 && y >= 0 && y < 64 && l >= 1 && l <= 9) b.push({ t: q.t, x, y, l });
+  }
+  return { lvl: Math.max(1, Math.min(9, Math.floor(+p.lvl) || 1)), terr: Math.max(0, Math.min(99, Math.floor(+p.terr) || 0)),
+           pw: num(p.pw, 1e9), dirty: num(p.dirty, 1e15), cash: num(p.cash, 1e15), sh: num(p.sh, 1e15), b, t: Date.now() };
+}
+const pending = u => (u.inbox || []).reduce((a, i) => ({ dirty: a.dirty + i.dirty, cash: a.cash + i.cash }), { dirty: 0, cash: 0 });
+function lootable(u) {       // what a raider could still take: last reported stash minus thefts the victim hasn't applied yet
+  const p = u.prof; if (!p) return { dirty: 0, cash: 0 };
+  const pe = pending(u); return { dirty: Math.max(0, p.dirty - pe.dirty), cash: Math.max(0, p.cash - pe.cash) };
+}
+const shieldOf = u => Math.max(u.shield || 0, (u.prof && u.prof.sh) || 0);
+
 const NAME_HINT = "Use 3–16 letters, numbers or underscores.";
 
-/* ---------- tiny JSON database, written atomically (fine for a small game; swap for SQLite/Postgres if it grows) */
+/* ---------- storage: in-memory object, persisted to Upstash Redis (one key per account) or a local file */
 let db = { users: {} };
-try { db = JSON.parse(fs.readFileSync(DB_FILE, "utf8")); db.users = db.users || {}; } catch (e) { /* first run */ }
-let dirty = false, timer = null;
-function markDirty() { dirty = true; if (!timer) timer = setTimeout(flush, 400); }
-function flush() {
-  timer = null; if (!dirty) return; dirty = false;
-  fs.mkdirSync(path.dirname(DB_FILE), { recursive: true });
-  const tmp = DB_FILE + ".tmp";
-  fs.writeFileSync(tmp, JSON.stringify(db));
-  fs.renameSync(tmp, DB_FILE);
+const persisted = new Map();            // account key -> last JSON written (so only changed accounts are re-sent)
+let dirty = false, timer = null, chain = Promise.resolve();
+async function redis(cmds) {            // Upstash REST pipeline: POST [["SET","k","v"],["GET","k"]] -> [{result}, ...]
+  const r = await fetch(REDIS_URL + "/pipeline", { method: "POST", headers: { Authorization: "Bearer " + REDIS_TOKEN, "Content-Type": "application/json" }, body: JSON.stringify(cmds) });
+  if (!r.ok) throw new Error("Redis HTTP " + r.status);
+  const out = await r.json(); const bad = out.find(x => x && x.error); if (bad) throw new Error("Redis: " + bad.error);
+  return out;
 }
-for (const sig of ["SIGINT", "SIGTERM"]) process.on(sig, () => { flush(); process.exit(0); });
+async function loadDb() {
+  if (useRedis) {
+    const keys = (await redis([["KEYS", "kp:user:*"]]))[0].result || [];
+    for (let i = 0; i < keys.length; i += 50) {
+      const part = keys.slice(i, i + 50), vals = await redis(part.map(k => ["GET", k]));
+      part.forEach((k, j) => { try { const u = JSON.parse(vals[j].result), key = k.slice(8); db.users[key] = u; persisted.set(key, vals[j].result); } catch (e) {} });
+    }
+    console.log("Loaded " + Object.keys(db.users).length + " account(s) from Redis");
+    if (!keys.length && fs.existsSync(DB_FILE)) {        // one-time move of an existing file database into Redis
+      try { db = JSON.parse(fs.readFileSync(DB_FILE, "utf8")); db.users = db.users || {}; markDirty(); console.log("Migrating file database to Redis"); } catch (e) {}
+    }
+  } else {
+    try { db = JSON.parse(fs.readFileSync(DB_FILE, "utf8")); db.users = db.users || {}; } catch (e) { /* first run */ }
+    console.warn("WARNING: no Redis configured, saving to " + DB_FILE + ". On Render's free plan this file is erased on every restart.");
+  }
+}
+function markDirty() { dirty = true; if (!timer) timer = setTimeout(flush, 400); }
+function flush() { timer = null; chain = chain.then(doFlush, doFlush); return chain; }
+async function doFlush() {
+  if (!dirty) return; dirty = false;
+  if (!useRedis) { fs.mkdirSync(path.dirname(DB_FILE), { recursive: true }); const tmp = DB_FILE + ".tmp"; fs.writeFileSync(tmp, JSON.stringify(db)); fs.renameSync(tmp, DB_FILE); return; }
+  const cmds = [];
+  for (const k in db.users) { const v = JSON.stringify(db.users[k]); if (persisted.get(k) !== v) cmds.push({ k, v }); }
+  for (let i = 0; i < cmds.length;) {   // batches stay under the ~1 MB request limit
+    const batch = []; let size = 0;
+    while (i < cmds.length && (!batch.length || size + cmds[i].v.length < 800 * 1024)) { size += cmds[i].v.length; batch.push(cmds[i++]); }
+    try { await redis(batch.map(c => ["SET", "kp:user:" + c.k, c.v])); batch.forEach(c => persisted.set(c.k, c.v)); }
+    catch (e) { console.error("Redis save failed, will retry:", e.message); dirty = true; if (!timer) timer = setTimeout(flush, 5000); return; }
+  }
+}
+for (const sig of ["SIGINT", "SIGTERM"]) process.on(sig, () => { setTimeout(() => process.exit(0), 6000).unref(); flush().finally(() => process.exit(0)); });
 
 /* ---------- passwords and tokens */
 const scrypt = (pw, salt) => new Promise((ok, no) => crypto.scrypt(pw, salt, 64, (e, k) => e ? no(e) : ok(k)));
@@ -138,9 +195,57 @@ async function api(req, res, url, p) {
       if (!s) return send(res, 400, { error: "That save file is not valid." });
       // Optimistic concurrency: the client says which version it built on. If another device saved since, tell it.
       if (!b.force && Number(b.baseVer) !== curVer) return send(res, 409, { error: "conflict", ver: curVer, t: cur ? cur.t : 0, data: cur ? cur.data : null });
-      a.user.save = { data: s.data, t: s.t, ver: curVer + 1, updated: Date.now() }; markDirty();
+      a.user.save = { data: s.data, t: s.t, ver: curVer + 1, updated: Date.now() };
+      const pr = cleanProf(b.prof); if (pr) a.user.prof = pr;
+      markDirty();
       return send(res, 200, { ver: curVer + 1 });
     }
+  }
+
+  if (p === "/api/opponent" && m === "GET") {          // pick a real base to raid and hand out a one-time ticket
+    const a = auth(req); if (!a) return send(res, 401, { error: "Please log in again." });
+    if (limited(ip, "opp", 90, 60e3)) return tooMany(res);
+    const lvl = +url.searchParams.get("lvl") || 1, pw = +url.searchParams.get("pw") || 0, now = Date.now(), cand = [];
+    for (const k in db.users) {
+      const u = db.users[k], pr = u.prof;
+      if (k === a.key || !pr || now - pr.t > PROF_MAX_AGE || shieldOf(u) > now || pr.b.length < 3) continue;
+      cand.push({ k, u, pr });
+    }
+    let pool = cand.filter(c => Math.abs(c.pr.lvl - lvl) <= 2 && (pw <= 0 || (c.pr.pw >= pw * .35 && c.pr.pw <= pw * 3)));
+    if (!pool.length) pool = cand.filter(c => Math.abs(c.pr.lvl - lvl) <= 3);
+    if (!pool.length) return send(res, 200, { opponent: null });
+    const c = pool[Math.floor(Math.random() * pool.length)], lt = lootable(c.u), ticket = crypto.randomBytes(12).toString("base64url");
+    for (const [t, v] of tickets) if (v.exp < now) tickets.delete(t);
+    tickets.set(ticket, { att: a.key, tgt: c.k, exp: now + 20 * 60e3 });
+    return send(res, 200, { opponent: { ticket, n: c.u.name, lvl: c.pr.lvl, terr: c.pr.terr, pw: c.pr.pw, b: c.pr.b,
+      l: Math.floor(lt.dirty * STEAL_DIRTY), lc: Math.floor(lt.cash * STEAL_CASH) } });
+  }
+
+  if (p === "/api/raid" && m === "POST") {              // attacker reports the result; server decides the loot and records the theft
+    const a = auth(req); if (!a) return send(res, 401, { error: "Please log in again." });
+    const b = await readBody(req), tk = tickets.get(String(b.ticket || "")), now = Date.now();
+    if (!tk || tk.att !== a.key || tk.exp < now || !db.users[tk.tgt]) return send(res, 410, { error: "That raid expired." });
+    tickets.delete(String(b.ticket));
+    const v = db.users[tk.tgt], pct = Math.max(0, Math.min(100, Math.floor(+b.pct) || 0)), stars = Math.max(0, Math.min(3, Math.floor(+b.stars) || 0));
+    const lt = lootable(v), dirty = Math.floor(lt.dirty * STEAL_DIRTY * pct / 100), cash = Math.floor(lt.cash * STEAL_CASH * pct / 100);
+    if (pct >= 15) {                                     // a real hit: log it for the victim and start their 12h shield
+      v.shield = now + SHIELD_MS;
+      v.inbox = (v.inbox || []).concat({ id: crypto.randomBytes(6).toString("hex"), from: a.user.name, t: now, stars, pct, dirty, cash }).slice(-30);
+      markDirty();
+    }
+    return send(res, 200, { dirty, cash, victim: v.name });
+  }
+
+  if (p === "/api/inbox" && m === "GET") {
+    const a = auth(req); if (!a) return send(res, 401, { error: "Please log in again." });
+    return send(res, 200, { items: a.user.inbox || [], shield: shieldOf(a.user) });
+  }
+  if (p === "/api/inbox/ack" && m === "POST") {         // victim applied the thefts: clear them and report the new stash in one step
+    const a = auth(req); if (!a) return send(res, 401, { error: "Please log in again." });
+    const b = await readBody(req), ids = new Set(Array.isArray(b.ids) ? b.ids.map(String) : []);
+    a.user.inbox = (a.user.inbox || []).filter(i => !ids.has(i.id));
+    const pr = cleanProf(b.prof); if (pr) a.user.prof = pr;
+    markDirty(); return send(res, 200, { ok: true, shield: shieldOf(a.user) });
   }
 
   if (p === "/api/me" && m === "GET") {
@@ -158,7 +263,7 @@ async function api(req, res, url, p) {
 }
 
 /* ---------- http server */
-http.createServer(async (req, res) => {
+const server = http.createServer(async (req, res) => {
   res.setHeader("Access-Control-Allow-Origin", "*");     // token auth in a header (no cookies), so this is safe
   res.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type");
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, OPTIONS");
@@ -176,4 +281,6 @@ http.createServer(async (req, res) => {
     if (e && (e.code === 400 || e.code === 413)) return send(res, e.code, { error: e.code === 413 ? "Save is too large." : "Bad request." });
     console.error(e); send(res, 500, { error: "Server error. Try again." });
   }
-}).listen(PORT, () => console.log("Kingpin server running on http://localhost:" + PORT));
+});
+loadDb().then(() => server.listen(PORT, () => console.log("Kingpin server running on http://localhost:" + PORT)))
+  .catch(e => { console.error("Could not load the account database:", e.message); process.exit(1); });
