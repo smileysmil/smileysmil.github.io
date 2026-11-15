@@ -1,0 +1,8 @@
+{
+  "name": "kingpin-server",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Account + cloud-save server for the Kingpin game (serves index.html too)",
+  "scripts": { "start": "node server.js" },
+  "engines": { "node": ">=18" }
+}
