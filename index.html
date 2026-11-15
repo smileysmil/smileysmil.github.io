@@ -173,6 +173,11 @@ button:focus-visible{outline:2px solid var(--tx);outline-offset:2px}
 #acb button{margin:10px 0 0}
 #acb .pgb button{margin:0}
 #abtn{display:none}
+#tsk{position:absolute;left:8px;right:8px;bottom:8px;z-index:4;display:flex;flex-direction:column;justify-content:flex-end;gap:6px;pointer-events:none}
+#tsk .tk{background:var(--pn);border:1px solid var(--ac);border-radius:4px;padding:6px 10px;box-shadow:0 2px 10px rgba(0,0,0,.45);animation:tkin .18s ease-out;transition:opacity .3s}
+#tsk .tk.out{opacity:0}
+.rb #tsk{bottom:76px!important}
+@keyframes tkin{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
 #acbtn{position:absolute;top:138px;right:8px;z-index:2;margin:0;font-size:12px;padding:5px 8px}
 #acbtn.ok{background:var(--pn);color:var(--gn);border:1px solid var(--gn)}
 #acbtn.wait,#acbtn.off{background:var(--pn);color:var(--mu);border:1px solid var(--ln)}
@@ -191,7 +196,7 @@ button:focus-visible{outline:2px solid var(--tx);outline-offset:2px}
 </style></head><body>
 <div id="top"></div>
 <div id="goal"></div><div id="coach"></div>
-<div id="cvw"><canvas id="cv"></canvas><div id="rh"></div><div id="dh">✋ Drag to move · Scroll to zoom</div><button id="rbtn" onclick="cz=1;cx=0;cy=0;applyCam()">🎯 Reset view</button><button id="abtn" onclick="admToggle()">🛠️ Admin</button><div id="adm"></div><div id="sbtn"><button id="vic" onclick="Snd.mute()" title="Mute / unmute" aria-label="Mute"></button><input id="vsl" type="range" min="0" max="100" step="1" value="84" oninput="Snd.setVol(this.value)" onchange="Snd.click()" aria-label="Volume"></div><button id="tbtn" onclick="showT=!showT;hud()"></button><button id="acbtn" onclick="KPAcct.open()">👤 Log in</button><div id="tip"></div><div id="rw"></div><div id="hint"><span id="ht"></span><button onclick="cancel()">Cancel</button></div><div id="pn"></div></div>
+<div id="cvw"><canvas id="cv"></canvas><div id="rh"></div><div id="dh">✋ Drag to move · Scroll to zoom</div><button id="rbtn" onclick="cz=1;cx=0;cy=0;applyCam()">🎯 Reset view</button><button id="abtn" onclick="admToggle()">🛠️ Admin</button><div id="adm"></div><div id="sbtn"><button id="vic" onclick="Snd.mute()" title="Mute / unmute" aria-label="Mute"></button><input id="vsl" type="range" min="0" max="100" step="1" value="84" oninput="Snd.setVol(this.value)" onchange="Snd.click()" aria-label="Volume"></div><button id="tbtn" onclick="showT=!showT;hud()"></button><button id="acbtn" onclick="KPAcct.open()">👤 Log in</button><div id="tip"></div><div id="rw"></div><div id="tsk"></div><div id="hint"><span id="ht"></span><button onclick="cancel()">Cancel</button></div><div id="pn"></div></div>
 <div id="nav"></div>
 <div id="fd">🔍 Moving through the city…</div><div id="md"><div id="mb"></div></div><div id="acm"><div id="acb"></div></div>
 <script>
@@ -207,7 +212,7 @@ const X={hold:false},el=id=>document.getElementById(id);
 const KEY="kpacct",PROMPTED="kpacct_prompted",GAME="kingpin1",NAME_RE=/^[A-Za-z0-9_]{3,16}$/,PUSH_EVERY=30000,MOVED_MS=45000;
 const BASE=AC_API||(location.protocol==="file:"?"http://localhost:3000":"");
 let acct=null;try{acct=JSON.parse(localStorage.getItem(KEY));if(!acct||!acct.tok)acct=null}catch(e){acct=null}
-let status=acct?(navigator.onLine?"syncing":"offline"):"guest",busy=false,busyForm=false,lastTry=0,loadT=0,tabK="register",cx={},chk=0,timer=0,userOk=null,pendTut=0,pickCloud=null,pickAcct=null,confirmOut=0;
+let lastErr="",launchT=0,status=acct?(navigator.onLine?"syncing":"offline"):"guest",busy=false,busyForm=false,lastTry=0,loadT=0,tabK="register",cx={},chk=0,timer=0,userOk=null,pendTut=0,pickCloud=null,pickAcct=null,confirmOut=0;
 
 const esc=s=>String(s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const nf=n=>typeof f==="function"?f(n):Math.floor(n);
@@ -240,28 +245,30 @@ async function verifyAdmin(){ // ask the server (when online) so an edited brows
 function pill(){admUI();const b=el("acbtn");if(!b)return;
  if(!acct){b.textContent="👤 Log in";b.className="";b.title="Log in or create an account to keep your progress on every device";return}
  if(pickCloud){b.textContent="☁️ Choose a save";b.className="bad";b.title="Your account and this device disagree. Tap to choose.";return}
- const m={synced:["☁️ Synced","ok"],syncing:["☁️ Syncing…","wait"],offline:["☁️ Offline","off"],error:["☁️ Sync problem","bad"]}[status]||["☁️ "+acct.u,""];
- b.textContent=m[0];b.className=m[1];b.title="Signed in as "+acct.u+(acct.at?" · last synced "+ago(acct.at):"")}
+ const m={synced:["☁️ Synced","ok"],syncing:["☁️ Syncing…","wait"],offline:[navigator.onLine?"☁️ Reconnecting…":"☁️ Offline","off"],error:["☁️ Sync problem","bad"]}[status]||["☁️ "+acct.u,""];
+ b.textContent=m[0];b.className=m[1];b.title="Signed in as "+acct.u+(acct.at?" · last synced "+ago(acct.at):"")+(lastErr&&status!=="synced"?" · "+lastErr:"")}
 function setStatus(s){status=s;pill()}
+const TRANSIENT=s=>s===0||s===429||s>=500;                 // server asleep / starting / busy: not a real error, just try again soon
+function problem(r){lastErr=r.off?"couldn't reach the server":"HTTP "+r.status+(r.d&&r.d.error?": "+r.d.error:"");
+ setStatus(TRANSIENT(r.status)?"offline":"error");lastTry=Date.now()-PUSH_EVERY+10000}   // retry in ~10s
 
 /* ---------- sync */
 async function push(force,keep){
  if(!acct||busy||X.hold||pickCloud)return false;
- lastTry=Date.now();busy=true;setStatus("syncing");
- save();const t=S.t,data=JSON.stringify(S);
- const r=await api("PUT","/api/save",{data,t,baseVer:acct.ver,force:!!force,prof:typeof RX==="object"?RX.profile():undefined},{keepalive:!!keep&&data.length<60000});
+ lastTry=Date.now();busy=true;setStatus("syncing");let r,t;
+ try{save();t=S.t;const data=JSON.stringify(S);let prof;try{prof=RX.profile()}catch(e){}
+  r=await api("PUT","/api/save",{data,t,baseVer:acct.ver,force:!!force,prof},{keepalive:!!keep&&data.length<60000})}
+ catch(e){busy=false;lastErr=String(e&&e.message||e);setStatus("error");return false}
  busy=false;
- if(r.off){setStatus("offline");return false}
  if(r.status===401){expired();return false}
  if(r.status===409){setStatus("error");conflict(r.d);return false}
- if(!r.ok){setStatus("error");return false}
- acct.ver=r.d.ver;acct.st=t;acct.at=Date.now();saveAcct();setStatus("synced");return true}
+ if(!r.ok){problem(r);return false}
+ lastErr="";acct.ver=r.d.ver;acct.st=t;acct.at=Date.now();saveAcct();setStatus("synced");return true}
 
 async function launch(){
- const r=await api("GET","/api/save");
- if(r.off){setStatus("offline");return}
+ clearTimeout(launchT);const r=await api("GET","/api/save");
  if(r.status===401){expired();return}
- if(!r.ok){setStatus("error");return}
+ if(!r.ok){problem(r);launchT=setTimeout(launch,10000);return}     // keep trying until the server answers, then compare saves
  const c=r.d;acct.admin=!!c.admin;saveAcct();admUI();
  if(!c.data){await push(true);return}                       // account has no save yet: upload this one
  if(c.ver===acct.ver){setStatus("synced");return}
@@ -370,9 +377,9 @@ async function doLogin(u,p){
 
 /* ---------- account panel (logged in) */
 function panel(){confirmOut=0;
- const st={synced:"☁️ Synced",syncing:"☁️ Syncing…",offline:"☁️ Offline: saved here, uploads when you reconnect",error:"☁️ Sync problem: retrying"}[status]||"";
+ const st={synced:"☁️ Synced",syncing:"☁️ Syncing…",offline:navigator.onLine?"☁️ Server not answering yet: saved here, retrying":"☁️ Offline: saved here, uploads when you reconnect",error:"☁️ Sync problem: retrying"}[status]||"";
  show(`<h3>Account</h3><p>Signed in as <b>${esc(acct.u)}</b>.</p>
- <div class="card"><div><b>Cloud save</b><div class="mu">${st}<br>Last synced ${ago(acct.at)}</div></div><div><button id="acsn" onclick="KPAcct.syncNow()">Sync now</button></div></div>
+ <div class="card"><div><b>Cloud save</b><div class="mu">${st}<br>Last synced ${ago(acct.at)}${lastErr&&status!=="synced"?`<br><span class="bad">Last problem: ${esc(lastErr)}</span>`:""}</div></div><div><button id="acsn" onclick="KPAcct.syncNow()">Sync now</button></div></div>
  <p class="mu">Your empire always saves on this device first, so you can play offline. Offline earnings are counted on whichever device you open next.</p>
  <div class="pgb"><button class="sec" id="aclo" onclick="KPAcct.logout()">Log out</button><button onclick="KPAcct.close()">Close</button></div>`)}
 async function syncNow(){const b=el("acsn");if(b){b.disabled=true;b.textContent="Syncing…"}
@@ -470,7 +477,7 @@ function makeBase(op){const d=op.d,bl=[],fn=[],L=op.lvl||1,hq=(160+26*d)*RC.bm*(
 /* ---------- scouting: a real player's base (when one is lined up) or a generated one; the player can't tell which */
 function newBase(){let op=null;const c=X.cache;
  if(c&&c.exp>Date.now()&&Math.random()<X.realP){op=c.op;X.cache=null;prefetch()}
- if(!op){const g=scoutBot(),bb=botBase(g.d);op={n:fakeName(),d:g.d,l:g.l,lc:0,lvl:bb.L,list:sanitize(bb.list)}}
+ if(!op){const g=scoutBot(),bb=botBase(g.d);op={n:fakeName(),d:g.d,l:Math.round(g.l*1.4),lc:0,lvl:bb.L,list:sanitize(bb.list)}}
  const{bl,fn}=makeBase(op),th=ri(0,3),hue=ri(0,359);
  RB={ph:"scout",g:{n:op.n,d:op.d,l:op.l,lc:op.lc||0,lvl:op.lvl,tk:op.tk||null},bl,fn,th,hue,units:[],groups:[],sel:0,x5:0,tl:RC.time,started:0,shots:[],pct:0,stars:0,hqd:0,key:"",id:Math.random()};
  const P=power(),r=P/op.d;RB.vd=r>=1.25?"🟢 Looks easy":r>=.95?"🟡 A fair fight":r>=.75?"🟠 A bit tougher than you":"🔴 Very tough";rhud()}
@@ -484,11 +491,11 @@ function rvBld(q,T){const[sx,sy]=sc(q.x,q.y),dd=q.hp<=0,hq=q.t==="hq",s=q.s,D=B[
 
 /* ---------- raid result (real targets are settled by the server) */
 function raidFinish(){if(RB.ph!=="battle")return;RB.ph="done";try{Snd.stopRaid()}catch(_){}
- const st=RB.stars,pct=RB.pct,g=RB.g,real=!!g.tk,loot=real?0:Math.floor(g.l*pct/100);let lost=0,hurt=0,vl=[];
+ const st=RB.stars,pct=RB.pct,g=RB.g,real=!!g.tk,bonus=st>=3?1.25:st>=2?1.1:1,loot=real?0:Math.floor(g.l*pct/100*bonus);let lost=0,hurt=0,vl=[];
  for(const u of RB.units)if(u.hp<=0){if(R()<(u.v?.4:.6)){lost++;S.u.lack=Math.max(0,S.u.lack-1);if(u.v){const i=S.vets.indexOf(u.v);if(i>=0)S.vets.splice(i,1);vl.push(u.v.n)}}else hurt++}
  S.dirty+=loot;S.resp=cl(S.resp+(st?3*st:-3));S.heat=cl(S.heat+3+3*st);const tk=st>=2;S.rv=(S.rv||0)+1;
  const ok=st>0;ok?Snd.win():Snd.lose();paused=true;
- $("mb").innerHTML=`<h3>${tk?"💥 Base Crushed!":ok?"Raid Complete":"Raid Failed"}</h3><p style="font-size:34px;text-align:center;margin:4px 0">${"⭐".repeat(st)}${"☆".repeat(3-st)}</p><p><b>${pct}%</b> of <b>${esc(g.n)}</b>'s base destroyed.<br>💰 Loot: <b id="rlt">${real?"counting…":"+$"+f(loot)+" dirty cash"}</b><br>⭐ Respect ${st?"+"+3*st:"-3"} · 🔥 Heat +${3+3*st}${tk?"<br>💥 Their base is wrecked. Land no longer changes hands: grow your turf by upgrading your Safehouse.":""}</p><p class="mu">${lost?`💀 ${lost} crew lost${vl.length?" ("+vl.join(", ")+")":""}. `:""}${hurt?`🩹 ${hurt} wounded crew recovered. `:""}${!lost&&!hurt?"Everyone came home alive. ":""}${st<2?"Tip: arm your crew in the 🛒 Shop and recruit more before the next raid.":""}</p><div class="pgb"><span></span><button onclick="raidHome()">Return Home ▶</button></div>`;
+ $("mb").innerHTML=`<h3>${tk?"💥 Base Crushed!":ok?"Raid Complete":"Raid Failed"}</h3><p style="font-size:34px;text-align:center;margin:4px 0">${"⭐".repeat(st)}${"☆".repeat(3-st)}</p><p><b>${pct}%</b> of <b>${esc(g.n)}</b>'s base destroyed.<br>💰 Loot: <b id="rlt">${real?"counting…":"+$"+f(loot)+" dirty cash"+(bonus>1?" (+"+Math.round((bonus-1)*100)+"% star bonus)":"")}</b><br>⭐ Respect ${st?"+"+3*st:"-3"} · 🔥 Heat +${3+3*st}${tk?"<br>💥 Their base is wrecked. Land no longer changes hands: grow your turf by upgrading your Safehouse.":""}</p><p class="mu">${lost?`💀 ${lost} crew lost${vl.length?" ("+vl.join(", ")+")":""}. `:""}${hurt?`🩹 ${hurt} wounded crew recovered. `:""}${!lost&&!hurt?"Everyone came home alive. ":""}${st<2?"Tip: arm your crew in the 🛒 Shop and recruit more before the next raid.":""}</p><div class="pgb"><span></span><button onclick="raidHome()">Return Home ▶</button></div>`;
  $("md").style.display="flex";rhud();
  if(real)KPAcct.req("POST","/api/raid",{ticket:g.tk,pct,stars:st},{timeout:10000}).then(r=>{let t;
   if(r.ok){const d=r.d.dirty|0,c=r.d.cash|0;S.dirty+=d;S.cash+=c;t=d||c?"+$"+f(d)+" dirty cash"+(c?" and +$"+f(c)+" cash":""):"nothing, their stash was empty";save();render();hud()}
@@ -516,6 +523,70 @@ async function poll(){if(X.polling||!KPAcct.a||RB||ev||paused||document.hidden||
 function init(){setInterval(prefetch,45000);setInterval(poll,45000);setTimeout(()=>{prefetch();poll()},5000)}
 
 Object.assign(X,{shielded,shieldLine,fakeName,profile,newBase,rvBld,raidFinish,prefetch,poll,init,sanitize,botBase,makeBase});
+return X})();
+</script>
+<script>
+/* ===== Drug trade: bulk deals with other gangs, and the cartel (needs a Trading Hub) =====
+   Sell: your drugs leave now, the DIRTY cash arrives when the courier delivers (gangs 30s-2min, cartel 2-5min).
+   Buy:  you pay CLEAN cash up front and the product lands in your stock.
+   Cartel lots are much bigger and pay more, and the price rises with your best Trading Hub's level. */
+const TRD=(()=>{
+const X={};
+const PRD=["weed","meth","guns","fent","coke"],NAME={weed:"Weed",meth:"Meth",guns:"Guns",fent:"Fentanyl",coke:"Cocaine"},BASE={weed:80,meth:30,guns:8,fent:20,coke:30};
+const rnd=(a,b)=>a+Math.random()*(b-a),pk=a=>a[Math.floor(Math.random()*a.length)],rid=()=>Math.random().toString(36).slice(2,9);
+const hubLv=()=>S.b.reduce((m,b)=>b.t==="hub"&&!b.d&&!(b.q&&b.q.k==="new")?Math.max(m,b.l):m,0);
+const hubMul=l=>1+.18*Math.max(0,l-1);
+const nice=n=>n>=100?Math.round(n/10)*10:n>=20?Math.round(n/5)*5:Math.max(1,Math.round(n));
+const lot=(mults)=>{const p=pk(PRD);return{p,n:nice(BASE[p]*pk(mults)*(1+.3*(S.lvl-1)))}};
+const mmss=s=>{s=Math.max(0,Math.ceil(s));return Math.floor(s/60)+":"+String(s%60).padStart(2,"0")};
+
+function mkOffers(){const L=[],used=new Set();
+ const add=(o)=>{let k=0;while(used.has(o.side+o.p)&&k++<8){const q=lot(o.c?[5,8,12]:[1,1.6,2.5]);o.p=q.p;o.n=q.n}used.add(o.side+o.p);L.push(o)};
+ for(let i=0;i<4;i++){const q=lot([1,1.6,2.5]);add({id:rid(),side:"sell",c:0,g:pk(NM),p:q.p,n:q.n,m:rnd(1,1.3),d:Math.round(rnd(30,120))})}     // gangs buying from you
+ for(let i=0;i<3;i++){const q=lot([1,1.6,2.5]);add({id:rid(),side:"buy",c:0,g:pk(NM),p:q.p,n:q.n,m:rnd(1.3,1.6),d:0})}                   // gangs selling to you
+ for(let i=0;i<2;i++){const q=lot([5,8,12]);add({id:rid(),side:"sell",c:1,g:"The Cartel",p:q.p,n:q.n,m:rnd(1.7,2.1),d:Math.round(rnd(120,300))})} // cartel: huge lots, big money, slow
+ return L}
+function ensure(){S.trq=S.trq||[];S.trlog=S.trlog||[];if(!S.tro||S.tro.exp<Date.now())S.tro={exp:Date.now()+5*60e3,list:mkOffers()}}
+const unit=o=>P[o.p]*o.m*(o.c?hubMul(hubLv()):1),total=o=>Math.round(unit(o)*o.n);
+const delayTxt=o=>o.c?"2–5 min":"30s–2 min";
+
+function sell(id){ensure();const o=S.tro.list.find(x=>x.id===id&&x.side==="sell");if(!o)return;
+ if(o.c&&!hubLv())return toast("🌴 Build a Trading Hub to deal with the Cartel.");
+ if(Math.floor(S[o.p])<o.n)return toast("You need "+o.n+" "+NAME[o.p]+" for this order.");
+ const pay=total(o);S[o.p]-=o.n;S.trq.push({id:rid(),g:o.g,p:o.p,n:o.n,pay,c:o.c,due:Date.now()+o.d*1000});
+ S.tro.list=S.tro.list.filter(x=>x!==o);S.heat=cl(S.heat+Math.min(o.c?8:3,pay/(o.c?2000:2500)));
+ toast((o.c?"🌴":"🚚")+" "+o.n+" "+NAME[o.p]+" on the way to "+o.g+". $"+f(pay)+" dirty on delivery.");try{Snd.click()}catch(e){}save();render();hud()}
+function buy(id){ensure();const o=S.tro.list.find(x=>x.id===id&&x.side==="buy");if(!o)return;
+ const cost=total(o);if(S.cash<cost)return toast("You need $"+f(cost)+" clean cash.");
+ S.cash-=cost;S[o.p]+=o.n;S.tro.list=S.tro.list.filter(x=>x!==o);
+ toast("📦 Bought "+o.n+" "+NAME[o.p]+" from "+o.g+" for $"+f(cost)+" clean.");try{Snd.click()}catch(e){}save();render();hud()}
+
+function settle(off){S.trq=S.trq||[];const now=Date.now(),done=S.trq.filter(q=>q.due<=now);if(!done.length)return"";
+ S.trq=S.trq.filter(q=>q.due>now);S.trlog=S.trlog||[];const lines=[];
+ for(const q of done){S.dirty+=q.pay;const l=(q.c?"🌴 ":"🏴 ")+q.g+" paid $"+f(q.pay)+" dirty for "+q.n+" "+NAME[q.p];lines.push(l);S.trlog.unshift(l)}
+ S.trlog.length=Math.min(S.trlog.length,6);
+ if(off)return"<p><b>🤝 Deliveries completed</b><br>"+lines.join("<br>")+"</p>";
+ toast("💰 "+lines[0]+(lines.length>1?" (+"+(lines.length-1)+" more)":""));try{Snd.cash&&Snd.cash()}catch(e){}render();hud();return""}
+
+function html(){ensure();const hl=hubLv(),now=Date.now(),sells=S.tro.list.filter(o=>o.side==="sell"&&!o.c),buys=S.tro.list.filter(o=>o.side==="buy"),cart=S.tro.list.filter(o=>o.c);
+ const row=(o,bt,dis,why)=>`<div class="card"><div style="flex:1"><b>${o.c?"🌴":"🏴"} ${o.g}</b> ${o.side==="sell"?"wants":"sells"} <b>${o.n} ${PN[o.p]} ${NAME[o.p]}</b><div class="mu">$${unit(o).toFixed(1)} each · total <b>$${f(total(o))}</b> ${o.side==="sell"?"dirty · delivery "+delayTxt(o):"clean · delivered now"}${why?` · <span class="bad">${why}</span>`:""}</div></div><button ${dis?"disabled":""} onclick="TRD.${o.side}('${o.id}')">${bt}</button></div>`;
+ const sellRow=o=>{const have=Math.floor(S[o.p]);return row(o,"Sell",have<o.n,have<o.n?"need "+(o.n-have)+" more":"")};
+ const buyRow=o=>row(o,"Buy",S.cash<total(o),S.cash<total(o)?"need $"+f(total(o)-Math.floor(S.cash)):"");
+ const pend=S.trq.slice().sort((a,b)=>a.due-b.due).map(q=>`<div class="mu">${q.c?"🌴":"🚚"} ${q.n} ${NAME[q.p]} → ${q.g}: <b>$${f(q.pay)}</b> dirty in <b data-due="${q.due}">${mmss((q.due-now)/1000)}</b></div>`).join("");
+ return`<div class="mu" style="padding:0 6px 8px">Trade drugs in bulk with other gangs. <b>Selling:</b> your drugs go out now and the <b>💰 dirty cash</b> arrives when the courier delivers (safe from raids until then). <b>Buying:</b> you pay <b>💵 clean cash</b> up front. Offers refresh in <b data-due="${S.tro.exp}">${mmss((S.tro.exp-now)/1000)}</b>.</div>
+ ${S.trq.length?`<div class="card" style="display:block"><b>🚚 On the way</b>${pend}</div>`:""}
+ <div class="mu" style="padding:6px 6px 2px"><b>Sell to gangs</b> · 30s–2 min delivery</div>${sells.length?sells.map(sellRow).join(""):'<div class="mu" style="padding:6px">No gangs are buying right now. Check back when offers refresh.</div>'}
+ <div class="mu" style="padding:10px 6px 2px"><b>Buy from gangs</b> · pay clean cash, get it now</div>${buys.length?buys.map(buyRow).join(""):'<div class="mu" style="padding:6px">Nobody is selling right now.</div>'}
+ <div class="mu" style="padding:10px 6px 2px"><b>🌴 The Cartel</b> · huge orders, big money, 2–5 min delivery</div>
+ ${hl?`<div class="mu" style="padding:0 6px 4px">Your 🚢 Trading Hub is <b>Lv${hl}</b>: the Cartel pays <b>×${hubMul(hl).toFixed(2)}</b> on top of their price. Upgrade the Hub for more profit on the same drugs.</div>${cart.length?cart.map(sellRow).join(""):'<div class="mu" style="padding:6px">The Cartel has no orders right now.</div>'}`
+  :`<div class="card"><div class="mu">🔒 Build a <b>🚢 Trading Hub</b> to sell to the Cartel. They want far more drugs in one go, pay much more in total, and the higher your Hub's level the more you earn from the same drugs. Heads up: Hubs draw cartel raids.</div></div>`}
+ ${S.trlog.length?`<div class="mu" style="padding:10px 6px 2px"><b>Recent payouts</b></div>${S.trlog.map(l=>`<div class="mu" style="padding:0 6px">${l}</div>`).join("")}`:""}`}
+
+function tick(){settle(0);const now=Date.now();document.querySelectorAll("[data-due]").forEach(e=>{e.textContent=mmss((+e.dataset.due-now)/1000)});
+ if(S.tro&&S.tro.exp<now&&typeof tab!=="undefined"&&tab==="trade"&&!document.hidden)render()}
+function init(){setInterval(tick,1000)}
+
+Object.assign(X,{html,sell,buy,settle,init,hubLv,hubMul});
 return X})();
 </script>
 <script>
@@ -1065,8 +1136,12 @@ abH=(tx,ty)=>NB.some(n=>n[0]===tx&&n[1]===ty)?22:12+hs(tx,ty)*18,demoCost=(tx,ty
 isSH=(x,y)=>SHC(x,y)||abOn(x>>1,y>>1);
 const bs=b=>B[b.t].s,bAt=(x,y)=>S.b.findIndex(b=>x>=b.x&&x<b.x+bs(b)&&y>=b.y&&y<b.y+bs(b));
 const fits=(x,y,s)=>{for(let i=0;i<s;i++)for(let j=0;j<s;j++)if(!inOwn((x+i)>>1,(y+j)>>1)||isSH(x+i,y+j)||bAt(x+i,y+j)>=0)return false;return true};
-function placeHint(){const pn=$("pn"),h=$("hint");if(!pn||!h)return;h.style.bottom=(pn.style.display!=="none"&&pn.offsetHeight?pn.offsetHeight+8:8)+"px"}
-function toast(m){if(/^(Not enough|Cannot|Finish the tutorial|Wait for)/.test(m))Snd.err();$("ht").textContent=m;$("hint").classList.toggle("pl",!!sel);$("hint").style.display="flex";placeHint();clearTimeout(tt);if(!sel)tt=setTimeout(()=>{if(!sel)$("hint").style.display="none"},3500)}
+function placeHint(){const pn=$("pn"),h=$("hint");if(!pn||!h)return;const bt=(pn.style.display!=="none"&&pn.offsetHeight?pn.offsetHeight+8:8)+"px";h.style.bottom=bt;const k=$("tsk");if(k)k.style.bottom=bt}
+function toast(m){if(/^(Not enough|Cannot|Finish the tutorial|Wait for)/.test(m))Snd.err();
+if(sel){$("ht").textContent=m;$("hint").classList.add("pl");$("hint").style.display="flex";placeHint();clearTimeout(tt);return}   // placing a building: keep using the placement bar
+const box=$("tsk"),d=document.createElement("div");d.className="tk";d.textContent=m;box.appendChild(d);   // every notification is its own toast; older ones get pushed up
+while(box.children.length>5)box.firstChild.remove();placeHint();
+setTimeout(()=>{d.classList.add("out");setTimeout(()=>d.remove(),320)},Math.min(7000,2800+m.length*40))}
 function md(t,h){$("mb").innerHTML=`<h3>${t}</h3>${h}<button onclick="closeMd()">Close</button>`;$("md").style.display="flex"}
 function cancel(){sel=null;$("hint").classList.remove("pl");$("hint").style.display="none"}
 document.addEventListener("keydown",e=>{if(e.key==="Escape"){cancel();if(tab&&tab!=="info"){tab=0;render()}if(si!=null){si=null;if(tab==="info"){tab=0;render()}}}});
@@ -1339,8 +1414,9 @@ else row=MG.map((m,i)=>{const own=S.mg[i],lk=m[3]>S.lvl,ok=!own&&!lk&&S.cash>=m[
 return{title:MTTL.staff,pills,body:`${note}<div class="bs-row">${row}</div>`}}
 // ---- Dealing
 function bsDl(d,i,mx){const L=DLV[d.lv-1],nx=d.lv<5?DLV[d.lv]:null,lk=nx&&d.lv>=mx;return`<div class="bs-c sm"><div class="nm">${d.n}</div><div class="art"><img data-q="wk:deal" data-e="🧢"></div><div class="mt"><span>Lv${d.lv} · ${L.t}</span><span></span></div><div class="gr">💊 ${L.sp}/s · ×${L.pm} price<br>🛡️ Defense ${L.df}${nx?"":" · Max"}</div><div class="bt">${nx?`<button ${lk||S.cash<nx.c?"disabled":""} onclick="dUp(${i})">${lk?"Needs Lv"+d.lv:"Train $"+f(nx.c)}</button>`:`<button disabled>Max</button>`}</div></div>`}
-function bsDeal(){syncDl();const sec=bsec.trade,mi=S.dmode||0,st=dstat(),mx=dmax(),pills=bsPills([["z","Sell zone"],["p","Products"],["d","Dealers ("+S.dl.length+")"],["r","Report"]],sec,"bsSec");
+function bsDeal(){syncDl();const sec=bsec.trade,mi=S.dmode||0,st=dstat(),mx=dmax(),pills=bsPills([["z","Sell zone"],["t","🤝 Trade"],["p","Products"],["d","Dealers ("+S.dl.length+")"],["r","Report"]],sec,"bsSec");
 const warn=!st.n?'<span class="bad"> You have no Dealers. Recruit some in 👥 Crew so your product gets sold.</span>':"";const note=`<div class="bs-note">Your 🧢 <b>Dealers</b> sell your stock on the streets and pay out in dirty cash. Selling adds a little 🔥 heat.${warn}</div>`;
+if(sec==="t")return{title:MTTL.trade,pills,body:`<div class="bs-scroll">${TRD.html()}</div>`};
 if(sec==="z")return{title:MTTL.trade,pills,body:`${note}<div class="bs-row">${DMODE.map((m,i)=>{const on=i===mi;return bsGC({id:"dm"+i,nm:m.n,e:m.e,l:"👥 ×"+(m.cu/DMODE[0].cu).toFixed(1),r:"⚠ "+m.r,pr:on?"✅ Active":"Choose",act:on?"bsInfo('dm"+i+"')":`setMode(${i})`,st:on?"own":"ok",info:`<b>${m.e} ${m.n}</b><br>${m.d}${m.gb?`<br><span style="color:#ff9b94">Rival raids on your base +${Math.round(m.gb*100)}%</span>`:""}`,card:`bsInfo('dm${i}')`})}).join("")}</div>`};
 if(sec==="p"){const E=PN,NM={weed:"Weed",meth:"Meth",guns:"Guns",fent:"Fentanyl",coke:"Cocaine"};return{title:MTTL.trade,pills,body:`${note}<div class="bs-note">Tap a product to turn selling on or off. Guns in stock also boost your crew's power, so they start off.</div><div class="bs-row">${["weed","meth","guns","fent","coke"].map(q=>bsGC({id:"pd"+q,nm:NM[q],e:E[q],l:"In stock: "+Math.floor(S[q]),r:"",pr:S.dsell[q]?"✅ Selling":"⛔ Off",act:`dTog('${q}')`,st:S.dsell[q]?"own":"no"})).join("")}</div>`}}
 if(sec==="d"){const up=S.dl.filter(d=>d.lv<mx),mn=up.length?Math.min(...up.map(d=>DLV[d.lv].c)):0;return{title:MTTL.trade,pills,body:`${note}<div class="mu" style="padding:0 14px"><button class="sec" style="margin:4px 8px 4px 0" ${up.length&&S.cash>=mn?"":"disabled"} onclick="dUpAll()">⬆️ Train all</button> Max level is your Safehouse level + 1 (now Lv${mx}).</div><div class="bs-grid">${S.dl.length?S.dl.map((d,i)=>bsDl(d,i,mx)).join(""):'<div class="mu" style="padding:20px">No dealers yet.</div>'}</div>`}}
@@ -1458,7 +1534,10 @@ ctx.fillStyle=sh(c,1.12);ctx.beginPath();ctx.ellipse(x,y-z1,rp,rp/2,0,0,6.3);ctx
 function dome(cu,cv,rp,z,c){zt(z+rp);const p=Q(cu,cv,0),x=p[0],y=p[1]-z;ctx.fillStyle=sh(c,.9);ctx.beginPath();ctx.arc(x,y,rp,Math.PI,0);ctx.closePath();ctx.fill();ctx.fillStyle=sh(c,.6);ctx.beginPath();ctx.moveTo(x,y);ctx.arc(x,y,rp,Math.PI,1.55*Math.PI);ctx.closePath();ctx.fill();ctx.fillStyle=sh(c,.5);ctx.beginPath();ctx.ellipse(x,y,rp,rp*.4,0,0,Math.PI);ctx.fill()}
 function awn(face,a0,a1,fix,z,dz,dep,c1,c2,n){const d=(a1-a0)/n;for(let i=0;i<n;i++){const s0=a0+d*i,s1=s0+d,c=i&1?c2:c1;
 face==="L"?fq([Q(s0,fix,z),Q(s1,fix,z),Q(s1,fix+dep,z-dz),Q(s0,fix+dep,z-dz)],sh(c,.8)):fq([Q(fix,s0,z),Q(fix,s1,z),Q(fix+dep,s1,z-dz),Q(fix+dep,s0,z-dz)],sh(c,1))}}
-function txt(face,a,fix,z,t,px,c){const p=face==="L"?Q(a,fix,z):Q(fix,a,z);ctx.save();ctx.translate(p[0],p[1]);ctx.transform(1,face==="L"?.5:-.5,0,1,0,0);ctx.font="800 "+px+"px system-ui,sans-serif";ctx.fillStyle=c;ctx.textAlign="left";ctx.fillText(t,0,0);ctx.restore()}
+function txt(face,a,fix,z,t,px,c,sp){const Lf=face==="L",P0=u=>Lf?Q(u,fix,z):Q(fix,u,z);ctx.save();let u=a,al="left",fs=px;
+const fit=(u0,u1,pad)=>{ctx.font="800 "+px+"px system-ui,sans-serif";const av=Math.abs(P0(u1)[0]-P0(u0)[0])*pad,w=ctx.measureText(t).width;return w>av?Math.max(2,px*av/w):px};
+if(sp){fs=fit(sp[0],sp[1],.93);u=(sp[0]+sp[1])/2;al="center"}else if(Lf&&a<=.4){fs=fit(a,1-a,.93);u=.5;al="center"}else if(Lf){fs=fit(a,.96,1)}
+const p=P0(u);ctx.translate(p[0],p[1]);ctx.transform(1,Lf?.5:-.5,0,1,0,0);ctx.font="800 "+fs+"px system-ui,sans-serif";ctx.fillStyle=c;ctx.textAlign=al;ctx.fillText(t,0,0);ctx.restore()}
 function glow(x,y,rgb,r,a){const g=ctx.createRadialGradient(x,y,0,x,y,r*3);g.addColorStop(0,`rgba(${rgb},${a||.5})`);g.addColorStop(1,`rgba(${rgb},0)`);ctx.fillStyle=g;ctx.fillRect(x-r*3,y-r*3,r*6,r*6)}
 function lamp(u,v,z,hh,rgb){const a=Q(u,v,z),b=Q(u,v,z+hh);zt(z+hh);L2(a,b,"#2a2c32",1.4);ctx.fillStyle="#fff2b8";ctx.fillRect(b[0]-1.5,b[1]-1.5,3,3);if(!M.dm)glow(b[0],b[1],rgb||"255,224,140",3,.5)}
 function puff(u,v,z,rgb,n,sp,sz){for(let i=0;i<n;i++){const ph=(M.T*sp+i/n+hsh1(M.sd+i))%1,p=Q(u,v,z+ph*20);ctx.fillStyle=`rgba(${rgb},${.4*(1-ph)})`;ctx.beginPath();ctx.arc(p[0]+(hsh1(i*3+M.sd)-.5)*5+ph*7,p[1],sz*(.5+ph),0,6.3);ctx.fill()}}
@@ -1478,38 +1557,38 @@ function tag(face,a,fix,z,c){const p=face==="L"?Q(a,fix,z):Q(fix,a,z),d=face==="
 const bag=(u,v)=>{const p=Q(u,v,0);ctx.fillStyle="#1f2226";ctx.beginPath();ctx.ellipse(p[0],p[1]-1.5,2.4,2,0,0,6.3);ctx.fill()};
 const bush=(u,v,z,r,c)=>{const p=Q(u,v,z);ctx.fillStyle=sh(c||"#3f8a3a",1);ctx.beginPath();ctx.arc(p[0],p[1]-r,r,0,6.3);ctx.fill();ctx.fillStyle=sh(c||"#3f8a3a",1.25);ctx.beginPath();ctx.arc(p[0]-r*.3,p[1]-r*1.2,r*.55,0,6.3);ctx.fill()};
 function planter(u,v){bx(u,v,u+.07,v+.07,0,3,"#7a6a5a");bush(u+.035,v+.035,3,2.6)}
-function neon(face,a,fix,z,t,px,c){ctx.save();ctx.shadowColor=c;ctx.shadowBlur=5;txt(face,a,fix,z,t,px,c);ctx.restore()}
+function neon(face,a,fix,z,t,px,c,sp){ctx.save();ctx.shadowColor=c;ctx.shadowBlur=5;txt(face,a,fix,z,t,px,c,sp);ctx.restore()}
 function strLights(a,b,n,c){for(let i=0;i<=n;i++){const t=i/n,x=a[0]+(b[0]-a[0])*t,y=a[1]+(b[1]-a[1])*t+Math.sin(t*Math.PI)*3;ctx.fillStyle=((M.T*3|0)+i)&1?c:"#fff2b0";ctx.fillRect(x-1,y-1,2,2)}}
 function barrelFire(u,v){cyl(u,v,3.2,0,7,"#6a3a2a");const f=Q(u,v,7);if(!M.dm){const fl=Math.sin(M.T*11+M.sd);ctx.fillStyle="#ff8a1a";ctx.beginPath();ctx.moveTo(f[0]-2.4,f[1]);ctx.lineTo(f[0],f[1]-5-fl*2);ctx.lineTo(f[0]+2.4,f[1]);ctx.fill();glow(f[0],f[1]-2,"255,150,40",4,.35)}}
 function wire(a,b){const n=6;for(let i=0;i<n;i++){const p=[a[0]+(b[0]-a[0])*i/n,a[1]+(b[1]-a[1])*i/n],q=[a[0]+(b[0]-a[0])*(i+.5)/n,a[1]+(b[1]-a[1])*(i+.5)/n-3],r=[a[0]+(b[0]-a[0])*(i+1)/n,a[1]+(b[1]-a[1])*(i+1)/n];L2(p,q,"#222",.9);L2(q,r,"#222",.9)}}
 const MD={};
 // ---------------- 1x1 street businesses: L1 scrappy -> L5 slick
 MD.corner=h=>{const t=M.lv,z=1.2;pad(t>=4?"#5a606c":"#454a54");
-if(t>=5){bx(.1,.28,.72,.9,z,z+16,"#e9e4da");wL(.16,.66,.9,z+3,z+11,"#8fd0ff",1);awn("L",.1,.72,.9,z+14,2.5,.22,"#d8a93a","#ffffff",6);bx(.12,.32,.7,.38,z+16,z+19,"#1a1d24");neon("L",.2,.38,z+17.2,"$ CASH",3.8,"#ffd24a");planter(.78,.66);planter(.78,.8);lamp(.86,.16,z,h+2);return}
+if(t>=5){bx(.1,.28,.72,.9,z,z+16,"#e9e4da");wL(.16,.66,.9,z+3,z+11,"#8fd0ff",1);awn("L",.1,.72,.9,z+14,2.5,.22,"#d8a93a","#ffffff",6);bx(.12,.32,.7,.38,z+16,z+19,"#1a1d24");neon("L",.2,.38,z+17.2,"$ CASH",3.8,"#ffd24a",[0.12,0.7]);planter(.78,.66);planter(.78,.8);lamp(.86,.16,z,h+2);return}
 if(t===1){bx(.18,.45,.62,.86,z,z+6,"#7a5a3a");bx(.22,.5,.54,.82,z+6,z+7,"#c9b27a");const p=Q(.4,.66,z+7);L2(p,[p[0]+1,p[1]-15],"#555",1);ctx.fillStyle=sh("#c0392b",1);ctx.beginPath();ctx.ellipse(p[0]+1,p[1]-15,9,4,0,Math.PI,0);ctx.fill();zt(z+20);bx(.72,.22,.86,.36,z,z+4,"#5a5a5a");bag(.8,.8);bag(.7,.9);return}
 if(t===2){bx(.14,.34,.62,.9,z,z+11,"#8a6a40");wL(.2,.56,.9,z+4,z+9,"#1e222a");bx(.2,.84,.54,.96,z+3,z+4.5,"#a88a60");awn("L",.1,.66,.9,z+11,2.5,.2,"#6a7a8a","#6a7a8a",4);lamp(.84,.2,z,h);bag(.76,.88);return}
 const hb=Math.min(h*.6,20);bx(.12,.3,.64,.9,z,z+hb,"#9a7230");wL(.18,.58,.9,z+hb*.28,z+hb*.78,"#1e222a");bx(.2,.84,.56,.96,z+hb*.24,z+hb*.3,"#c9b27a");
-awn("L",.08,.68,.9,z+hb*.86,3,.2,"#d8503f","#f2e9d8",5);bx(.14,.34,.6,.4,z+hb,z+hb+4,"#2a2d34");txt("L",.28,.4,z+hb+3.2,"$",5.5,"#ffd24a");
-if(t>=4){bx(.7,.55,.9,.75,z,z+4,"#a07840");bx(.72,.58,.88,.72,z+4,z+7,"#8a6a38");neon("L",.18,.9,z+hb*.98,"OPEN",3.4,"#ff5a5a");planter(.76,.84)}
+awn("L",.08,.68,.9,z+hb*.86,3,.2,"#d8503f","#f2e9d8",5);bx(.14,.34,.6,.4,z+hb,z+hb+4,"#2a2d34");txt("L",.28,.4,z+hb+3.2,"$",5.5,"#ffd24a",[0.14,0.6]);
+if(t>=4){bx(.7,.55,.9,.75,z,z+4,"#a07840");bx(.72,.58,.88,.72,z+4,z+7,"#8a6a38");neon("L",.18,.9,z+hb*.98,"OPEN",3.4,"#ff5a5a",[0.18,0.58]);planter(.76,.84)}
 lamp(.84,.16,z,h+2)};
 MD.chop=h=>{const t=M.lv;pad("#3d414a");const hb=Math.min(h*.82,28);
 bx(.06,.1,.94,.92,0,hb,t<=2?"#7a4f28":t>=5?"#cfd3d9":"#8a5a2a",{t:t>=4?"#8a9098":"#6f7378"});
 for(let i=1;i<6;i++)L2(Q(.06+i*.15,.1,hb),Q(.06+i*.15,.92,hb),"rgba(0,0,0,.25)",.8);
 wL(.16,.84,.92,0,hb*.7,"#14161a");
-if(t<=1){wL(.16,.84,.92,0,hb*.7,"#6a6e74");for(let i=1;i<6;i++)wL(.16,.84,.92,i*hb*.11,i*hb*.11+.8,"#44484e");board("L",.2,.34,.92,hb*.18,hb*.5);txt("L",.24,.92,hb*.9,"CHOP",5,"#e8e0d0")}
-else{bx(.26,.72,.72,.9,1,hb*.28,t>=5?"#2a6fd8":"#c0392b");bx(.34,.74,.62,.88,hb*.28,hb*.4,t>=5?"#2a6fd8":"#c0392b");wL(.36,.6,.88,hb*.29,hb*.39,"#9fd0e6");for(let i=0;i<3;i++)wL(.16,.84,.92,hb*.5+i*hb*.07,hb*.54+i*hb*.07,"#9aa0a8");txt("L",.2,.92,hb*.9,"CHOP",t>=3?6:5,t>=3?"#ffd24a":"#d8c890")}
+if(t<=1){wL(.16,.84,.92,0,hb*.7,"#6a6e74");for(let i=1;i<6;i++)wL(.16,.84,.92,i*hb*.11,i*hb*.11+.8,"#44484e");board("L",.2,.34,.92,hb*.18,hb*.5);txt("L",.24,.92,hb*.9,"CHOP",5,"#e8e0d0",[0.16,0.84])}
+else{bx(.26,.72,.72,.9,1,hb*.28,t>=5?"#2a6fd8":"#c0392b");bx(.34,.74,.62,.88,hb*.28,hb*.4,t>=5?"#2a6fd8":"#c0392b");wL(.36,.6,.88,hb*.29,hb*.39,"#9fd0e6");for(let i=0;i<3;i++)wL(.16,.84,.92,hb*.5+i*hb*.07,hb*.54+i*hb*.07,"#9aa0a8");txt("L",.2,.92,hb*.9,"CHOP",t>=3?6:5,t>=3?"#ffd24a":"#d8c890",[0.16,0.84])}
 stripe("R",.1,.9,.94,0,3,8,"#e8b13a","#1a1a1a");
-if(t>=4){bx(.2,.4,.8,.5,hb,hb+6,"#14161a");neon("L",.3,.5,hb+4.4,"AUTO",5,t>=5?"#5ac8ff":"#ff9a3a")}
+if(t>=4){bx(.2,.4,.8,.5,hb,hb+6,"#14161a");neon("L",.3,.5,hb+4.4,"AUTO",5,t>=5?"#5ac8ff":"#ff9a3a",[0.2,0.8])}
 if(t>=5)wL(.06,.94,.92,hb*.9,hb*.97,"#2a6fd8");
 for(let i=0;i<(t<=2?5:3);i++)cyl(.9,.98,3.2,i*2.6,i*2.6+2.5,"#1b1b1f");lamp(.1,.96,hb*.78,5,"255,200,120")};
 MD.loan=h=>{const t=M.lv;pad(t>=4?"#4a5a68":"#3a4a58");const hb=Math.min(h*.8,26);
 bx(.12,.12,.88,.88,0,hb,t<=2?"#4a6070":t>=5?"#26384a":"#3a6a8a");
 if(t<=1){board("L",.2,.5,.88,hb*.25,hb*.65);wL(.6,.8,.88,0,hb*.5,"#1a1d22")}else{wins("L",.2,.8,.88,hb*.3,hb*.7,2,"#10151b");for(let i=0;i<4;i++){const u=.24+i*.14;L2(Q(u,.88,hb*.3),Q(u,.88,hb*.7),"#b8c0c8",.8)}}
 wR(.3,.7,.88,0,hb*.5,"#1d2a36");bx(.1,.1,.9,.9,hb,hb+2,"#2c5470");
-if(t<=2){fq([Q(.2,.5,hb+2),Q(.8,.5,hb+2),Q(.8,.5,hb+9),Q(.2,.5,hb+9)],sh("#b89a6a",1));txt("L",.26,.5,hb+6.4,"LOANS",4.6,"#2a2a2a")}
+if(t<=2){fq([Q(.2,.5,hb+2),Q(.8,.5,hb+2),Q(.8,.5,hb+9),Q(.2,.5,hb+9)],sh("#b89a6a",1));txt("L",.26,.5,hb+6.4,"LOANS",4.6,"#2a2a2a",[0.1,0.9])}
 else{const fh=10+t*2,f=[Q(.25,.5,hb+2),Q(.85,.5,hb+2),Q(.5,.5,hb+fh)];fq(f,sh(t>=5?"#d8dde4":"#7fa2b8",.9));fq([f[0],f[2],Q(.4,.5,hb+6)],sh("#5a7f94",.9))}
 if(t>=3&&!M.dm){const g=Q(.85,.88,hb*.5);glow(g[0],g[1],"90,255,150",5,.4)}if(t>=3)txt("R",.78,.88,hb*.45,"$",9,t>=5?"#ffd24a":"#6dff9a");
-if(t>=5){wL(.2,.8,.88,hb*.8,hb*.95,"#101820");txt("L",.28,.88,hb*.9,"$HARK & CO",3.7,"#ffd24a")}};
+if(t>=5){wL(.2,.8,.88,hb*.8,hb*.95,"#101820");txt("L",.28,.88,hb*.9,"$HARK & CO",3.7,"#ffd24a",[0.2,0.8])}};
 MD.racket=h=>{const t=M.lv;pad("#3a3a44");const hb=Math.min(h*.82,26);
 bx(.1,.12,.9,.9,0,hb,t>=5?"#1d1a22":t<=2?"#4a2c36":"#5b3340");if(t<=4)brick("L",.1,.9,.9,0,hb,3);
 if(t>=3)awn("L",.08,.92,.9,hb*.62,3.5,.22,"#80409a","#d9c3ea",6);else if(t===2)awn("L",.12,.88,.9,hb*.55,2.5,.18,"#5a4a66","#5a4a66",4);
@@ -1527,7 +1606,7 @@ wL(.38,.62,.94,0,hb*.46,"#ffd980",true);
 awn("L",.32,.68,.94,hb*.58,4,.2,t<=2?"#6a2a30":"#b5252d",t<=2?"#a89a70":"#e8c96a",6);wR(.15,.5,.96,hb*.3,hb*.62,"#4aa0ff",true);wR(.58,.88,.96,hb*.3,hb*.62,"#ff4d6d",true);if(t>=3)txt("R",.9,.96,hb*.18,"777",7,"#ffd24a");
 if(t>=5)dome(.5,.3,11,hb,"#d8a93a");
 bx(.12,.44,.88,.52,hb,hb+13,"#14080e");
-if(t<=2)txt("L",.2,.52,hb+4.5,"POKER",7.4,"#8a7a50");else txt("L",.17,.52,hb+4,"CASINO",8.6,"#ffd24a");
+if(t<=2)txt("L",.2,.52,hb+4.5,"POKER",7.4,"#8a7a50",[0.12,0.88]);else txt("L",.17,.52,hb+4,"CASINO",8.6,"#ffd24a",[0.12,0.88]);
 if(t>=3)for(let i=0;i<13;i++){const p=Q(.12+i*.06,.52,hb+13);ctx.fillStyle=((M.T*5|0)+i)&1?"#fff2a0":"#e0502a";ctx.fillRect(p[0]-1,p[1]-1,2,2)}
 if(t>=4){cyl(.3,.99,2.6,0,hb*.58,"#d8a93a");cyl(.7,.99,2.6,0,hb*.58,"#d8a93a");planter(.08,.98);planter(.88,.98)}
 if(t>=4&&!M.dm){for(let k=0;k<2;k++){const a=Math.sin(M.T*.8+k*2)*.5,p=Q(.2+k*.6,.2,hb);ctx.fillStyle="rgba(255,240,190,.09)";ctx.beginPath();ctx.moveTo(p[0]-1.5,p[1]);ctx.lineTo(p[0]+1.5,p[1]);ctx.lineTo(p[0]+1.5+a*34+5,p[1]-44);ctx.lineTo(p[0]-1.5+a*34-5,p[1]-44);ctx.fill()}}};
@@ -1550,22 +1629,22 @@ if(t<=1){ // rundown: grimy windows, tiny hand-painted sign, no awning
  wL(.1,.9,.92,2,hb*.55,"#4a5560");for(let i=0;i<3;i++){const u=.16+i*.26;wL(u,u+.16,.92,2,hb*.24,"#7a8590")}
  L2(Q(.1,.92,hb*.55),Q(.5,.92,hb*.2),"rgba(255,255,255,.14)",1);const b=Q(.82,.92,hb*.4);ctx.fillStyle="#ffe9a8";ctx.fillRect(b[0]-1,b[1]-1,2.4,2.4);
  for(let i=1;i<7;i++){const u=.1+i*.11;L2(Q(u,.92,2),Q(u,.92,hb*.55),"rgba(0,0,0,.35)",.8)}
- wL(.34,.66,.92,hb*.62,hb*.84,"#c8c0a8");txt("L",.37,.92,hb*.76,"LAUNDRY",4.2,"#3a3a3a");tag("L",.14,.92,hb*.86,"#e84a8a");bag(.1,1.0);bag(.2,1.04);
+ wL(.34,.66,.92,hb*.62,hb*.84,"#c8c0a8");txt("L",.37,.92,hb*.76,"LAUNDRY",4.2,"#3a3a3a",[0.34,0.66]);tag("L",.14,.92,hb*.86,"#e84a8a");bag(.1,1.0);bag(.2,1.04);
 }else{
  wL(.1,.9,.92,2,hb*.58,"#9fd3ee",1);for(let i=0;i<5;i++){const u=.15+i*.14;wL(u,u+.1,.92,2,hb*.28,"#e9eef2",1);const p=Q(u+.05,.92,hb*.16);ctx.fillStyle="#4f9ccc";ctx.beginPath();ctx.arc(p[0],p[1],2.3,0,6.3);ctx.fill();ctx.fillStyle="#cfeaf8";ctx.beginPath();ctx.arc(p[0]-.6,p[1]-.6,1,0,6.3);ctx.fill()}
  L2(Q(.1,.92,hb*.58),Q(.3,.92,hb*.2),"rgba(255,255,255,.4)",1.2);
  if(t===2)awn("L",.06,.94,.92,hb*.64,2.5,.16,"#6a8aa0","#6a8aa0",4);else awn("L",.06,.94,.92,hb*.64,3,.2,"#2f84b0","#f4f8fb",8);
  wL(.12,.88,.92,hb*.7,hb*.93,t>=5?"#12323f":t===2?"#4a6a80":"#1d5f86");
- if(t>=5)neon("L",.17,.92,hb*.86,"LAUNDRY",6,"#7af0ff");else txt("L",.2,.92,hb*.86,"LAUNDRY",t===2?5:5.8,"#ffffff");
+ if(t>=5)neon("L",.17,.92,hb*.86,"LAUNDRY",6,"#7af0ff",[0.12,0.88]);else txt("L",.2,.92,hb*.86,"LAUNDRY",t===2?5:5.8,"#ffffff",[0.12,0.88]);
  if(t>=4){neon("L",.74,.92,hb*.5,"OPEN",3.2,"#ff5a5a");planter(.06,1.0);planter(.86,1.0)}
  if(t>=5){bush(.02,1.02,0,4,"#3f8a3a");bush(.98,1.0,0,4,"#3f8a3a");for(let i=0;i<4;i++){const a=Q(.12+i*.24,.92,hb*.64),b=Q(.2+i*.24,.92,hb*.64-3);ctx.fillStyle=["#7af0ff","#ffffff"][i&1];ctx.fillRect(a[0],a[1]-1,3,3)}}}
 wins("R",.2,.8,.95,hb*.35,hb*.75,2,t<=1?"#4a5560":"#9fd3ee",t>=2);bx(.18,.2,.34,.36,hb,hb+4,"#8a9098");cyl(.7,.3,2.6,hb,hb+8,"#a0a6ae");puff(.7,.3,hb+8,"240,248,255",t<=1?2:4,.35,2.4);
-if(t>=4){bx(.4,.12,.9,.2,hb,hb+7,"#12323f");neon("L",.46,.2,hb+4.6,"LAUNDRY",4.6,"#7af0ff")}
+if(t>=4){bx(.4,.12,.9,.2,hb,hb+7,"#12323f");neon("L",.46,.2,hb+4.6,"LAUNDRY",4.6,"#7af0ff",[0.4,0.9])}
 if(!M.dm&&t>=3)for(let i=0;i<3;i++){const ph=(M.T*.5+i/3)%1,p=Q(.9,.96,hb*.3+ph*14);ctx.strokeStyle=`rgba(190,230,255,${.8*(1-ph)})`;ctx.lineWidth=.8;ctx.beginPath();ctx.arc(p[0]+Math.sin(ph*9+i)*3,p[1],1.6+i*.5,0,6.3);ctx.stroke()}};
 MD.wash=h=>{const t=M.lv;pad("#3a4048");const hb=Math.min(h*.9,34);
 const car=(u0,u1)=>{bx(u0,.42,u1,.7,2,7,"#d94f4f");bx(u0+.12,.44,u1-.12,.68,7,11.5,"#d94f4f");wL(u0+.14,u1-.14,.68,7.5,11,"#bfe3f2");wR(.46,.66,u1-.12,7.5,11,"#bfe3f2");bx(u0+.04,.68,u0+.12,.72,0,3,"#111");bx(u1-.12,.68,u1-.04,.72,0,3,"#111")};
 if(t<=1){bx(.04,.14,.96,.9,0,1,"#262b34");car(.24,.76);for(const[u,v]of[[.06,.9],[.94,.9],[.06,.18],[.94,.18]])bx(u-.025,v-.025,u+.025,v+.025,0,hb*.72,"#8a8f96");
- fq([Q(.02,.14,hb*.74),Q(.98,.14,hb*.74),Q(.98,.92,hb*.66),Q(.02,.92,hb*.66)],"rgba(58,122,208,.9)");bx(.3,.94,.7,.98,hb*.35,hb*.5,"#c9b27a");txt("L",.33,.98,hb*.43,"WASH $5",3.6,"#2a2a2a");cyl(.14,.86,2.2,0,3.4,"#d8c040");
+ fq([Q(.02,.14,hb*.74),Q(.98,.14,hb*.74),Q(.98,.92,hb*.66),Q(.02,.92,hb*.66)],"rgba(58,122,208,.9)");bx(.3,.94,.7,.98,hb*.35,hb*.5,"#c9b27a");txt("L",.33,.98,hb*.43,"WASH $5",3.6,"#2a2a2a",[0.3,0.7]);cyl(.14,.86,2.2,0,3.4,"#d8c040");
  if(!M.dm)for(let i=0;i<5;i++){const p=Q(.25+i*.12,.56,11+(i&1)*2);ctx.fillStyle="rgba(255,255,255,.85)";ctx.beginPath();ctx.arc(p[0],p[1],2+(i&1),0,6.3);ctx.fill()}zt(hb*.75);return}
 bx(.04,.04,.96,.14,0,hb,t<=2?"#4a7f86":"#2c7f86");bx(.04,.14,.96,.9,0,1,"#262b34");car(.24,.76);
 if(t>=3){cyl(.14,.5,3.4,0,hb*.7,"#2a7fd4");cyl(.88,.5,3.4,0,hb*.7,"#2a7fd4");for(let i=0;i<4;i++){const a=Q(.14,.5,i*6+3);L2([a[0]-3.4,a[1]],[a[0]+3.4,a[1]],"#7cc4ff",.8)}
@@ -1574,7 +1653,7 @@ if(t>=3){cyl(.14,.5,3.4,0,hb*.7,"#2a7fd4");cyl(.88,.5,3.4,0,hb*.7,"#2a7fd4");for
  for(let i=0;i<5;i++){const p=Q(.25+i*.12,.56,11+(i&1)*2);ctx.fillStyle="rgba(255,255,255,.85)";ctx.beginPath();ctx.arc(p[0],p[1],2+(i&1),0,6.3);ctx.fill()}}}
 for(const[u,v]of[[.06,.9],[.94,.9],[.06,.18],[.94,.18]])bx(u-.03,v-.03,u+.03,v+.03,0,hb,t<=2?"#b8c4c6":"#eaf6f7");
 bx(0,0,1,1,hb-3,hb,t<=2?"#4a7f86":"#2c7f86");bx(.18,.86,.82,.94,hb,hb+9,t>=5?"#0c3a40":"#145e66");
-if(t>=5)neon("L",.22,.94,hb+3.4,"CAR WASH",6.4,"#7af0ff");else txt("L",.23,.94,hb+3.2,"CAR WASH",t<=2?5.4:6.4,t<=2?"#d8e8e8":"#ffffff");
+if(t>=5)neon("L",.22,.94,hb+3.4,"CAR WASH",6.4,"#7af0ff",[0.18,0.82]);else txt("L",.23,.94,hb+3.2,"CAR WASH",t<=2?5.4:6.4,t<=2?"#d8e8e8":"#ffffff",[0.18,0.82]);
 if(t>=4)for(let i=0;i<9;i++){const a=Q(.1+i*.1,.94,hb+1),b=Q(.14+i*.1,.94,hb+5);ctx.fillStyle=["#ff5a5a","#ffd24a","#5ac8ff"][i%3];ctx.beginPath();ctx.moveTo(a[0],a[1]);ctx.lineTo(b[0],b[1]);ctx.lineTo(a[0]+4,a[1]);ctx.fill()}
 if(t>=5&&!M.dm){L2(Q(.04,.94,hb-3),Q(.96,.94,hb-3),"rgba(120,240,255,.9)",1.4);L2(Q(.96,.94,hb-3),Q(.96,.06,hb-3),"rgba(120,240,255,.9)",1.4)}};
 MD.resto=h=>{const t=M.lv;pad("#3d3a3a");const hb=Math.min(h,32);
@@ -1588,7 +1667,7 @@ if(t<=2){const hh=hb*.75;wins("L",.1,.9,.9,hh*.3,hh*.7,3,t<=1?"#6a6a50":"#ffcf80
 bx(.05,.7,.95,.98,0,1.2,"#7b6a58");
 wins("L",.1,.9,.7,hb*.28,hb*.66,3,"#ffcf80",true,.6);wL(.44,.56,.7,0,hb*.5,"#5a2f1a");wins("R",.15,.55,.95,hb*.3,hb*.65,2,"#ffcf80",true,.6);
 awn("L",.07,.93,.7,hb*.74,3,.16,"#2e8b57","#f2f2f2",9);
-if(t>=5)neon("L",.14,.7,hb*.9,"RISTORANTE",4.4,"#ffd24a");else txt("L",.2,.7,hb*.86,"TRATTORIA",4.9,"#ffe9a8");
+if(t>=5)neon("L",.14,.7,hb*.9,"RISTORANTE",4.4,"#ffd24a",[0.05,0.95]);else txt("L",.2,.7,hb*.86,"TRATTORIA",4.9,"#ffe9a8",[0.05,0.95]);
 const rh=Math.max(7,hb*.3);gable(.02,.02,.98,.74,hb,rh,t>=5?"#5a3a34":"#8a3a2a","#b0603a","u");bx(.76,.1,.86,.2,hb+rh*.3,hb+rh+6,"#7a3a2a");puff(.81,.15,hb+rh+6,"150,150,155",3,.3,2.6);
 const nt=t>=4?4:3;for(let i=0;i<nt;i++){const u=.16+i*(.7/(nt-1)),p=Q(u,.88,0),q=Q(u,.88,10);cyl(u,.88,2.6,0,3,t>=5?"#fffaf0":"#f4f4f4");L2(p,q,"#555",.8);ctx.fillStyle=t>=5?["#fffaf0","#2e8b57","#c0392b"][i%3]:["#c0392b","#2e8b57","#f4f4f4"][i%3];ctx.beginPath();ctx.ellipse(q[0],q[1],6,3,0,Math.PI,0);ctx.fill()}
 if(t>=4)strLights(Q(.05,.98,12),Q(.95,.98,12),12,"#ffcf60");if(t>=5){planter(.0,.98);planter(.93,.98);bush(.5,1.04,0,3.2,"#2f7a3a")}};
@@ -1625,7 +1704,7 @@ for(let i=0;i<=4;i++){const u=.05+i*.225;L2(Q(u,.95,zz),Q(u,vm,zz+rh),fc,.8);L2(
 L2(Q(.05,vm,zz+rh),Q(.95,vm,zz+rh),"#e6f6ee",1.4);wL(.42,.58,.95,0,bz,"#2a3a2a");
 const f=Q(.5,.3,zz+rh+1.5);ctx.strokeStyle="#cfd6dc";ctx.lineWidth=1.2;ctx.beginPath();ctx.ellipse(f[0],f[1],4,2,0,0,6.3);ctx.stroke();const a=M.T*8;L2([f[0]-Math.cos(a)*3.6,f[1]-Math.sin(a)*1.8],[f[0]+Math.cos(a)*3.6,f[1]+Math.sin(a)*1.8],"#cfd6dc",1.2);
 if(t>=4){const f2=Q(.2,.3,zz+rh*.3);ctx.strokeStyle="#cfd6dc";ctx.beginPath();ctx.ellipse(f2[0],f2[1],3,1.5,0,0,6.3);ctx.stroke()}
-if(t>=5){bx(.14,.9,.86,.98,hb*.1,hb*.26,"#12281a");neon("L",.2,.98,hb*.2,"GREEN CO",5.6,"#7affa0")}
+if(t>=5){bx(.14,.9,.86,.98,hb*.1,hb*.26,"#12281a");neon("L",.2,.98,hb*.2,"GREEN CO",5.6,"#7affa0",[0.14,0.86])}
 const lp=Q(.88,.96,0);leaf(lp[0],lp[1]-7,7,"#3fae3a")};
 MD.lab=h=>{const t=M.lv;pad("#3a3d36");const hb=Math.min(h,32);
 if(t<=1){bx(.15,.25,.62,.8,0,12,"#6a6a40",{t:"#4a4a40"});fq([Q(.12,.22,13),Q(.66,.22,13),Q(.66,.84,10),Q(.12,.84,10)],"rgba(70,120,70,.9)");wL(.2,.34,.8,3,8,"#5a8a3a",true);wL(.44,.54,.8,0,8,"#1a1a14");cyl(.5,.35,1.8,13,24,"#555");puff(.5,.35,24,"150,205,60",3,.3,2.4);cyl(.78,.7,3,0,6,"#c9b21f");cyl(.9,.8,3,0,6,"#2f8a3a");bag(.15,.9);zt(25);return}
@@ -1641,7 +1720,7 @@ MD.fent=h=>{const t=M.lv;pad("#3a3a46");const hb=Math.min(h,34);
 if(t<=1){bx(.15,.2,.7,.8,0,13,"#7a7468",{t:"#5a5448"});board("L",.2,.34,.8,3,9);wL(.44,.62,.8,3,9,"#b06bff",true);wL(.7,.82,.8,0,7,"#1a1816");fq([Q(.12,.16,14),Q(.74,.16,14),Q(.74,.84,11),Q(.12,.84,11)],"rgba(110,100,120,.9)");bag(.2,.92);cyl(.84,.6,2.8,0,6,"#6a6a72");zt(15);return}
 bx(.06,.08,.94,.92,0,hb,t<=2?"#b8b0a0":"#d8d2e8",{t:"#b9b0d0"});
 wins("L",.1,.9,.92,hb*.32,hb*.68,t<=2?2:4,"#b06bff",true,t<=2?.5:.8);wins("R",.12,.88,.94,hb*.32,hb*.68,t<=2?2:4,"#b06bff",true,t<=2?.5:.8);wL(.4,.6,.92,0,hb*.28,"#9fe0ff",true);
-wL(.1,.9,.92,hb*.76,hb*.92,"#5a2b8a");if(t>=5)neon("L",.2,.92,hb*.88,"PHARMA",6.2,"#e0b0ff");else txt("L",.2,.92,hb*.88,"PHARMA",t<=2?5:6.2,"#ffffff");
+wL(.1,.9,.92,hb*.76,hb*.92,"#5a2b8a");if(t>=5)neon("L",.2,.92,hb*.88,"PHARMA",6.2,"#e0b0ff",[0.1,0.9]);else txt("L",.2,.92,hb*.88,"PHARMA",t<=2?5:6.2,"#ffffff",[0.1,0.9]);
 bx(.14,.16,.4,.42,hb,hb+5,"#9aa0ac");if(t>=3)bx(.5,.2,.78,.36,hb,hb+4,"#aab0bc");if(t>=4)bx(.5,.44,.7,.6,hb,hb+4,"#aab0bc");
 cyl(.2,.7,2.4,hb,hb+11,"#c0c6d0");if(t>=3)cyl(.34,.7,2.4,hb,hb+9,"#c0c6d0");if(t>=5)cyl(.48,.78,2.4,hb,hb+13,"#c0c6d0");puff(.2,.7,hb+11,"235,225,255",4,.4,2.4);
 if(!M.dm){const g=Q(.5,.92,hb*.5);glow(g[0],g[1],"176,107,255",9,.12+t*.03)}
@@ -1795,7 +1874,7 @@ const rh=hb*.34+4;gable(.05,.09,.95,.93,hb,rh,roof,wall,"v");bx(.7,.2,.8,.3,hb+3
 MD.c_shop=h=>{const sd=M.sd,hb=h,fl=Math.max(2,Math.round(hb/9)),fh=hb/fl,wall=hsh1(sd+6)<.5?pick(BRK,7):pick(CONC,8),ac=pick(AWN,9);
 bx(.05,.05,.95,.95,0,hb,wall,{t:"#6a6e75"});if(wall[1]!=="a")brick("L",.05,.95,.95,fh,hb,3);
 wL(.07,.93,.95,2,fh*.78,"#8fc4e0",1);wR(.15,.85,.95,2,fh*.7,"#8fc4e0",1);wL(.42,.58,.95,0,fh*.8,"#2a2a30");
-awn("L",.05,.95,.95,fh*.86,3,.12,ac,"#f2f2f2",8);wL(.1,.9,.95,fh*.9,fh*1.18,"#1d1d22");txt("L",.2,.95,fh*1.02,pick(SIGN,10),4.6,"#ffe9a8");
+awn("L",.05,.95,.95,fh*.86,3,.12,ac,"#f2f2f2",8);wL(.1,.9,.95,fh*.9,fh*1.18,"#1d1d22");txt("L",.2,.95,fh*1.02,pick(SIGN,10),4.6,"#ffe9a8",[0.1,0.9]);
 fac("L",.12,.88,.95,fh*1.22,hb-2,4,fl-1,sd,"#2a3644",.3);fac("R",.12,.88,.95,fh,hb-2,4,fl-1,sd+4,"#2a3644",.3);
 bx(.05,.9,.95,.95,hb,hb+2,"#a8a094");bx(.9,.05,.95,.9,hb,hb+2,"#a8a094");roofKit(hb+2,sd,0)};
 MD.c_office=h=>{const sd=M.sd,hb=h,fl=Math.max(3,Math.round(hb/7)),base=M.cc&&M.cc[0]==="#"?M.cc:pick(CONC,11),hs=hb*.78,gl="#38566e";
@@ -1837,7 +1916,7 @@ cyl(.5,.46,2.4,hb+9+10,hb+9+18,"#e8e2d2");L2(Q(.5,.46,hb+9+18),Q(.5,.46,hb+9+30)
 const fp=Q(.5,.46,hb+9+30),wv=Math.sin(M.T*3);ctx.fillStyle="#3a62c0";ctx.beginPath();ctx.moveTo(fp[0],fp[1]);ctx.lineTo(fp[0]+11,fp[1]+2+wv);ctx.lineTo(fp[0]+10,fp[1]+8+wv);ctx.lineTo(fp[0],fp[1]+8);ctx.fill();
 bx(.2,.86,.8,.98,0,2,"#d8d2c2");bx(.24,.82,.76,.94,2,4,"#d8d2c2");bx(.28,.78,.72,.9,4,5.8,"#d8d2c2");
 for(let i=0;i<6;i++)cyl(.3+i*.08,.88,2.2,5.8,hb-8,"#f2eee2");bx(.24,.76,.76,.94,hb-8,hb-4,"#e8e2d2");wL(.5-.08,.5+.08,.94,hb*.4,hb*.7,"#1a1a1e");
-gable(.24,.76,.76,.94,hb-4,9,"#b9b3a3","#e8e2d2","v");txt("L",.36,.94,hb-5.4,"CITY HALL",3.6,"#7a7466");
+gable(.24,.76,.76,.94,hb-4,9,"#b9b3a3","#e8e2d2","v");txt("L",.36,.94,hb-5.4,"CITY HALL",3.6,"#7a7466",[0.24,0.76]);
 for(const[u,v]of[[.12,.9],[.88,.9],[.04,.1],[.96,.1]])lamp(u,v,1.5,12);bush(.1,.96,1.5,3.4);bush(.9,.96,1.5,3.4)};
 MD.lm_st=()=>{bx(.04,.04,.96,.96,0,1.4,"#8f8b80");bx(.1,.1,.9,.9,1.4,2,"#a8a49a");cyl(.5,.5,13.5,2,6,"#b0aca0");
 const w=Q(.5,.5,6),t=M.T;ctx.fillStyle="#5fa0c8";ctx.beginPath();ctx.ellipse(w[0],w[1],11,5.5,0,0,6.3);ctx.fill();ctx.strokeStyle="rgba(255,255,255,.5)";ctx.lineWidth=.8;for(let i=0;i<2;i++){const ph=(t*.5+i*.5)%1;ctx.beginPath();ctx.ellipse(w[0],w[1],4+ph*7,2+ph*3.5,0,0,6.3);ctx.globalAlpha=1-ph;ctx.stroke();ctx.globalAlpha=1}
@@ -2196,7 +2275,7 @@ if(L.done.length)ln.push(`<p>🏗️ Construction finished while you were away: 
 const wr=S.b.filter(b=>b.d).length;if(wr)ln.push(`<p class="bad">⚠️ ${wr} building${wr>1?"s are":" is"} still wrecked.</p>`);
 if(S.u.deal<sn.deal)ln.push(`<p class="bad">⚠️ ${sn.deal-S.u.deal} street dealer${sn.deal-S.u.deal>1?"s were":" was"} lost while selling.</p>`);if(S.u.lack<sn.lack)ln.push(`<p class="bad">⚠️ Crew down from ${sn.lack} to ${S.u.lack} lackeys.</p>`);
 if(L.raids.length&&!(S.mg[0]&&S.mg[1]))ln.push(`<p class="mu">Tip: hire Managers in the Staff tab and they will clean up after raids for you.</p>`);
-md("👋 Welcome Back, Kingpin",ln.join(""));render();hud()}
+const tl=TRD.settle(1);if(tl)ln.push(tl);md("👋 Welcome Back, Kingpin",ln.join(""));render();hud()}
 let hidAt=0;
 document.addEventListener("visibilitychange",()=>{if(document.hidden){hidAt=Date.now();save()}else if(hidAt){const s=(Date.now()-hidAt)/1000;hidAt=0;if(!paused&&!RB)offlineRun(s)}});
 addEventListener("pagehide",save);
@@ -2883,7 +2962,7 @@ function tut(n){if(n===99){tutSkip();$("md").style.display="none";paused=false;P
 Snd.setFly(airSpawn);try{new ResizeObserver(placeHint).observe($("pn"))}catch(e){}Snd.label();render();placeHint();resize();requestAnimationFrame(loop);
 try{if(!localStorage.getItem("kptut3")){const g=localStorage.getItem("kptg3");if(g!==null&&+g<TG.length){tgi=+g;tgCheck();render()}else if(S.b.length>=3||S.lvl>1){localStorage.setItem("kptut3","1")}else tut(0)}}catch(e){}
 if(OFF0>45)offlineRun(OFF0);
-KPAcct.init();newBase=RX.newBase;raidFinish=RX.raidFinish;RX.init();
+KPAcct.init();newBase=RX.newBase;raidFinish=RX.raidFinish;RX.init();TRD.init();
 </script>
 <script>
 // Embedded audio (base64): chatter, heli, car, sirenR (raid siren), sirenD (distant siren), plane, pistol, rifle

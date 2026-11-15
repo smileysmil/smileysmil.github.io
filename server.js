@@ -22,7 +22,7 @@ const http = require("http"), fs = require("fs"), path = require("path"), crypto
 const PORT = +process.env.PORT || 3000;
 const DB_FILE = process.env.DATA_FILE || path.join(__dirname, "data", "kingpin-db.json");
 const PAGE = process.env.GAME_FILE || path.join(__dirname, "index.html");
-const TRUST_PROXY = process.env.TRUST_PROXY === "1";
+const TRUST_PROXY = process.env.TRUST_PROXY === "1" || (process.env.TRUST_PROXY !== "0" && !!process.env.RENDER);   // on Render every request arrives via its proxy: use the real client IP, or all players would share one rate limit
 const REDIS_URL = (process.env.UPSTASH_REDIS_REST_URL || "").replace(/\/$/, ""), REDIS_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN || "";
 const useRedis = !!(REDIS_URL && REDIS_TOKEN);
 const TOKEN_MS = 90 * 864e5, MAX_TOKENS = 10, MAX_SAVE = useRedis ? 700 * 1024 : 2 * 1024 * 1024;   // Upstash free tier caps a request at 1 MB
@@ -31,7 +31,7 @@ const ADMIN_KEY = (process.env.ADMIN_USER || "smiley").toLowerCase();   // the o
 const isAdminKey = k => k === ADMIN_KEY;
 /* ---------- player raids: base snapshots, raid tickets, loot inbox, shield */
 const BTYPES = new Set(["corner","chop","loan","racket","casino","hideout","front","wash","resto","club","farm","lab","fent","hub","armory","fence","tower","sand","turret","mgnest","bunker"]);
-const SHIELD_MS = 12 * 36e5, PROF_MAX_AGE = 14 * 864e5, STEAL_DIRTY = 0.35, STEAL_CASH = 0.10;
+const SHIELD_MS = 12 * 36e5, PROF_MAX_AGE = 14 * 864e5, STEAL_DIRTY = 0.42, STEAL_CASH = 0.12;
 const tickets = new Map();   // raid ticket -> { att, tgt, exp }  (in memory; a restart just voids open raids)
 const num = (v, max) => { v = +v; return Number.isFinite(v) && v >= 0 ? Math.min(v, max) : 0; };
 function cleanProf(p) {      // the public "base snapshot" other players raid; sanitised, never trusted blindly
@@ -65,6 +65,7 @@ async function redis(cmds) {            // Upstash REST pipeline: POST [["SET","
   return out;
 }
 async function loadDb() {
+  db = { users: {} }; persisted.clear();
   if (useRedis) {
     const keys = (await redis([["KEYS", "kp:user:*"]]))[0].result || [];
     for (let i = 0; i < keys.length; i += 50) {
@@ -270,7 +271,11 @@ const server = http.createServer(async (req, res) => {
   if (req.method === "OPTIONS") { res.writeHead(204); return res.end(); }
   try {
     const url = new URL(req.url, "http://x"), p = url.pathname;
-    if (p.startsWith("/api/")) return await api(req, res, url, p);
+    if (p === "/api/health") return send(res, 200, { ok: true, ready: dbReady, storage: useRedis ? "redis" : "file", accounts: Object.keys(db.users).length });
+    if (p.startsWith("/api/")) {
+      if (!dbReady) return send(res, 503, { error: "Server is starting up. Try again in a moment." });
+      return await api(req, res, url, p);
+    }
     if (p === "/" || p === "/index.html") {
       if (!fs.existsSync(PAGE)) { res.writeHead(404, { "Content-Type": "text/plain" }); return res.end("index.html not found next to server.js"); }
       res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-cache" });
@@ -282,5 +287,11 @@ const server = http.createServer(async (req, res) => {
     console.error(e); send(res, 500, { error: "Server error. Try again." });
   }
 });
-loadDb().then(() => server.listen(PORT, () => console.log("Kingpin server running on http://localhost:" + PORT)))
-  .catch(e => { console.error("Could not load the account database:", e.message); process.exit(1); });
+let dbReady = false;
+server.listen(PORT, () => console.log("Kingpin server running on http://localhost:" + PORT));
+(async function boot() {     // never crash-loop if the database is briefly unreachable: stay up, answer 503, keep retrying
+  for (;;) {
+    try { await loadDb(); dbReady = true; console.log("Account database ready"); return; }
+    catch (e) { console.error("Account database not ready (" + e.message + "). Retrying in 4s..."); await new Promise(r => setTimeout(r, 4000)); }
+  }
+})();
